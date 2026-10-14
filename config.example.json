@@ -1,9 +1,14 @@
 {
   "music_dir": "/srv/music",
   "background_video": "/srv/video/background.mp4",
-  "rtmp_url": "rtmp://a.rtmp.youtube.com/live2/KEYHERE",
-  "title_file": "/tmp/now_playing.txt",
+  "rtmp_url": "rtmp://live.restream.io/live/YOUR_RESTREAM_KEY",
+  "title_file": "/tmp/music_livestream_overlay/center_title.txt",
   "playlist_file": "/tmp/music_playlist.txt",
-  "font": "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+  "overlay_dir": "/tmp/music_livestream_overlay",
+  "title_font": "submodules/obscustomsetup/fonts/Staatliches-Regular.ttf",
+  "info_font": "submodules/obscustomsetup/fonts/DMSans.ttf",
+  "type_ms": 80,
+  "erase_ms": 40,
+  "title_hold": 1.8,
   "restart_delay": 2.0
 }

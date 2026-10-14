@@ -1,0 +1,72 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Python: Music Livestream (config.json)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/music_livestream.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "args": [
+        "--config",
+        "${workspaceFolder}/config.json"
+      ],
+      "justMyCode": true
+    },
+    {
+      "name": "Python: Music Livestream (CLI overrides)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/music_livestream.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "args": [
+        "--music-dir",
+        "/srv/music",
+        "--background-video",
+        "${workspaceFolder}/submodules/obscustomsetup/assets/stream loop 1.mp4",
+        "--rtmp-url",
+        "rtmp://live.restream.io/live/YOUR_RESTREAM_KEY",
+        "--title-file",
+        "/tmp/music_livestream_overlay/center_title.txt",
+        "--playlist-file",
+        "/tmp/music_playlist.txt",
+        "--overlay-dir",
+        "/tmp/music_livestream_overlay",
+        "--title-font",
+        "${workspaceFolder}/submodules/obscustomsetup/fonts/Staatliches-Regular.ttf",
+        "--info-font",
+        "${workspaceFolder}/submodules/obscustomsetup/fonts/DMSans.ttf",
+        "--type-ms",
+        "80",
+        "--erase-ms",
+        "40",
+        "--title-hold",
+        "1.8",
+        "--restart-delay",
+        "2.0"
+      ],
+      "justMyCode": true
+    },
+    {
+      "name": "Python: Music Livestream (custom fast mode)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/music_livestream.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "args": [
+        "--config",
+        "${workspaceFolder}/config.json",
+        "--type-ms",
+        "50",
+        "--erase-ms",
+        "25",
+        "--title-hold",
+        "1.2"
+      ],
+      "justMyCode": true
+    }
+  ]
+}
