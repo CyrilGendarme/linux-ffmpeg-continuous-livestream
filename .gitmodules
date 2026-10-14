@@ -1,0 +1,3 @@
+[submodule "submodules/videoeffectgenerator"]
+	path = submodules/videoeffectgenerator
+	url = git@github.com:CyrilGendarme/video_text_type_effect_generator.git
