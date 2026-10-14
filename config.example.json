@@ -1,0 +1,9 @@
+{
+  "music_dir": "/srv/music",
+  "background_video": "/srv/video/background.mp4",
+  "rtmp_url": "rtmp://a.rtmp.youtube.com/live2/KEYHERE",
+  "title_file": "/tmp/now_playing.txt",
+  "playlist_file": "/tmp/music_playlist.txt",
+  "font": "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+  "restart_delay": 2.0
+}
