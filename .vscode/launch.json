@@ -15,6 +15,34 @@
       "justMyCode": true
     },
     {
+      "name": "Music: VPS non-audible self-test",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "livestream.self_test",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "args": [
+        "--config",
+        "${workspaceFolder}/config.json"
+      ],
+      "justMyCode": true
+    },
+    {
+      "name": "Music: VPS self-test (skip RTMP)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "livestream.self_test",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "args": [
+        "--config",
+        "${workspaceFolder}/config.json",
+        "--rtmp-url",
+        ""
+      ],
+      "justMyCode": true
+    },
+    {
       "name": "Music: Local preview stream sender",
       "type": "debugpy",
       "request": "launch",
@@ -74,8 +102,21 @@
   ],
   "compounds": [
     {
+      "name": "Tier 0: VPS self-test",
+      "configurations": [
+        "Music: VPS non-audible self-test"
+      ]
+    },
+    {
       "name": "Tier 1: Local random playback",
       "configurations": [
+        "Music: Local random playback"
+      ]
+    },
+    {
+      "name": "Tier 1.5: Validate + local playback",
+      "configurations": [
+        "Music: VPS non-audible self-test",
         "Music: Local random playback"
       ]
     },

@@ -67,6 +67,31 @@ Run:
 python3 music_livestream.py --config config.json
 ```
 
+## VPS Self-Test (non-audible)
+
+Use this command to validate the full pipeline on a headless VPS without relying on desktop audio output:
+
+```bash
+python3 music_self_test.py --config config.json
+```
+
+You can also run it as a module:
+
+```bash
+python3 -m livestream.self_test --config config.json
+```
+
+The self-test prints `PASS` / `FAIL` / `SKIP` for each step:
+
+- Dependencies (`ffmpeg`, `ffprobe`)
+- Track scan in `music_dir`
+- Metadata probe via `ffprobe`
+- Concat playlist decode to null output (non-audible)
+- Overlay text file write/verify
+- RTMP host/port TCP connectivity precheck
+
+Exit code is non-zero if any check fails.
+
 ## Optional CLI overrides
 
 Every config field can still be overridden from CLI. Example:
