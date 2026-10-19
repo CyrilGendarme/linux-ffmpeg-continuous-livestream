@@ -54,9 +54,12 @@ Edit `config.json`:
   "type_ms": 80,
   "erase_ms": 40,
   "title_hold": 1.8,
-  "restart_delay": 2.0
+  "restart_delay": 2.0,
+  "track_fade_seconds": 3.0
 }
 ```
+
+`track_fade_seconds` controls how long each track fades in at the start and fades out at the end. The default is 3 seconds.
 
 Run:
 

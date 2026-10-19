@@ -2,10 +2,10 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Python: Music Livestream (config.json)",
+      "name": "Music: Local random playback",
       "type": "debugpy",
       "request": "launch",
-      "program": "${workspaceFolder}/music_livestream.py",
+      "module": "livestream.local_playback",
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "args": [
@@ -15,58 +15,83 @@
       "justMyCode": true
     },
     {
-      "name": "Python: Music Livestream (CLI overrides)",
+      "name": "Music: Local preview stream sender",
       "type": "debugpy",
       "request": "launch",
-      "program": "${workspaceFolder}/music_livestream.py",
-      "cwd": "${workspaceFolder}",
-      "console": "integratedTerminal",
-      "args": [
-        "--music-dir",
-        "/srv/music",
-        "--background-video",
-        "${workspaceFolder}/submodules/obscustomsetup/assets/stream loop 1.mp4",
-        "--rtmp-url",
-        "rtmp://live.restream.io/live/YOUR_RESTREAM_KEY",
-        "--title-file",
-        "/tmp/music_livestream_overlay/center_title.txt",
-        "--playlist-file",
-        "/tmp/music_playlist.txt",
-        "--overlay-dir",
-        "/tmp/music_livestream_overlay",
-        "--title-font",
-        "${workspaceFolder}/submodules/obscustomsetup/fonts/Staatliches-Regular.ttf",
-        "--info-font",
-        "${workspaceFolder}/submodules/obscustomsetup/fonts/DMSans.ttf",
-        "--type-ms",
-        "80",
-        "--erase-ms",
-        "40",
-        "--title-hold",
-        "1.8",
-        "--restart-delay",
-        "2.0"
-      ],
-      "justMyCode": true
-    },
-    {
-      "name": "Python: Music Livestream (custom fast mode)",
-      "type": "debugpy",
-      "request": "launch",
-      "program": "${workspaceFolder}/music_livestream.py",
+      "module": "livestream.runner",
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "args": [
         "--config",
         "${workspaceFolder}/config.json",
-        "--type-ms",
-        "50",
-        "--erase-ms",
-        "25",
-        "--title-hold",
-        "1.2"
+        "--rtmp-url",
+        "udp://127.0.0.1:1234?pkt_size=1316",
+        "--output-format",
+        "mpegts"
       ],
       "justMyCode": true
+    },
+    {
+      "name": "Music: Local preview viewer",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "livestream.local_viewer",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "args": [
+        "--url",
+        "udp://@:1234?fifo_size=1000000&overrun_nonfatal=1"
+      ],
+      "justMyCode": true
+    },
+    {
+      "name": "Music: Full stream stack",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "livestream.runner",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "args": [
+        "--config",
+        "${workspaceFolder}/config.json"
+      ],
+      "justMyCode": true
+    },
+    {
+      "name": "Backend: Control API",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/start_control_api.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "env": {
+        "INSTANCE_API_KEY": "change-me-shared-secret",
+        "DJANGO_SECRET_KEY": "debug-secret-key",
+        "DJANGO_DEBUG": "1"
+      },
+      "justMyCode": true
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Tier 1: Local random playback",
+      "configurations": [
+        "Music: Local random playback"
+      ]
+    },
+    {
+      "name": "Tier 2: Local preview stream + viewer",
+      "configurations": [
+        "Music: Local preview stream sender",
+        "Music: Local preview viewer"
+      ]
+    },
+    {
+      "name": "Tier 3: Full stream + backend API",
+      "configurations": [
+        "Music: Full stream stack",
+        "Backend: Control API"
+      ]
     }
   ]
 }
