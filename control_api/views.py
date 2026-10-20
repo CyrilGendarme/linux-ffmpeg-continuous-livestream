@@ -1,23 +1,20 @@
 import json
 
-from django.conf import settings
 from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
+
+from .auth import check_secret
 
 TARGET_TIME = {"hours": 0, "minutes": 0}
 
 
-def _require_instance_key(request):
-    provided = request.headers.get("X-Instance-Key") or request.headers.get("X-API-Key")
-    if provided != settings.INSTANCE_API_KEY:
-        return False
-    return True
-
-
+@csrf_exempt  # authenticated by a header secret, not by cookies
 @require_http_methods(["GET", "POST"])
 def target_time(request):
-    if not _require_instance_key(request):
-        return JsonResponse({"detail": "Missing or invalid instance key."}, status=401)
+    denied = check_secret(request)
+    if denied is not None:
+        return denied
 
     if request.method == "POST":
         try:
@@ -42,10 +39,12 @@ def target_time(request):
     return JsonResponse({"hours": TARGET_TIME["hours"], "minutes": TARGET_TIME["minutes"]})
 
 
+@csrf_exempt
 @require_http_methods(["POST"])
 def push_json(request):
-    if not _require_instance_key(request):
-        return JsonResponse({"detail": "Missing or invalid instance key."}, status=401)
+    denied = check_secret(request)
+    if denied is not None:
+        return denied
 
     try:
         payload = json.loads(request.body.decode("utf-8"))

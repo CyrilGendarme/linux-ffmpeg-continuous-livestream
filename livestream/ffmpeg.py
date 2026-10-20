@@ -1,129 +1,189 @@
 from pathlib import Path
-from typing import Dict, List
+from typing import List, Optional
+
+from .overlay import CANVAS_H, CENTER_H, CENTER_W, CENTER_Y, PANEL_W, PANEL_X
 
 
-def ffmpeg_escape(value: str) -> str:
-    return value.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+# Raw PCM format exchanged between track decoders, the Python mixer and the encoder.
+PCM_FORMAT = "f32le"
+PCM_SAMPLE_RATE = 48000
+PCM_CHANNELS = 2
+
+
+def build_decoder_command(track: Path, gain_db: float = 0.0) -> List[str]:
+    """Decode a single track to raw PCM on stdout, applying a fixed gain."""
+    gain = ["-af", f"volume={gain_db:.2f}dB"] if gain_db else []
+    return [
+        "ffmpeg",
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-threads",
+        "1",
+        "-i",
+        str(track),
+        "-map",
+        "0:a:0",
+        *gain,
+        "-f",
+        PCM_FORMAT,
+        "-ar",
+        str(PCM_SAMPLE_RATE),
+        "-ac",
+        str(PCM_CHANNELS),
+        "pipe:1",
+    ]
+
+
+LAYOUT_SIZE = "1920x1080"  # overlay coordinates below are designed for this canvas
+
+
+def build_background_command(source: Path, output: Path, fps: float, bitrate: str) -> List[str]:
+    """Pre-scale the background loop once: layout size, output fps, no audio, moderate bitrate."""
+    return [
+        "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+        "-i", str(source),
+        "-an",
+        "-vf", f"scale={LAYOUT_SIZE.replace('x', ':')},fps={fps:g},format=yuv420p",
+        "-c:v", "libx264", "-preset", "medium", "-b:v", bitrate,
+        "-movflags", "+faststart",
+        str(output),
+    ]
 
 
 def build_ffmpeg_command(
     background_video: Path,
-    tracks: List[Path],
-    track_durations: List[float],
-    overlay_files: Dict[str, Path],
+    panel_fd: int,
+    title_fd: int,
     stream_url: str,
     output_format: str,
-    title_font_path: str,
-    info_font_path: str,
-    track_fade_seconds: float,
+    settings,
+    realtime: bool = True,
+    duration: Optional[float] = None,
 ) -> List[str]:
-    title_font = ffmpeg_escape(title_font_path)
-    info_font = ffmpeg_escape(info_font_path)
-    center_title = ffmpeg_escape(str(overlay_files["center"]))
-    artist = ffmpeg_escape(str(overlay_files["artist"]))
-    track_title = ffmpeg_escape(str(overlay_files["title"]))
-    album = ffmpeg_escape(str(overlay_files["album"]))
-    label = ffmpeg_escape(str(overlay_files["label"]))
-    year = ffmpeg_escape(str(overlay_files["year"]))
-    bpm = ffmpeg_escape(str(overlay_files["bpm"]))
+    """Long-running encoder.
 
-    if len(tracks) != len(track_durations):
-        raise ValueError("Track list and duration list must be the same length")
+    Inputs: looped background video, the now-playing panel as raw RGBA frames
+    (pipe `panel_fd`), the centre title as a raw alpha mask (pipe `title_fd`),
+    and raw PCM audio on stdin. Overlay frames come from livestream.overlay.
 
-    effective_fade = max(0.0, float(track_fade_seconds))
-    if track_durations:
-        shortest_track = min(track_durations)
-        effective_fade = min(effective_fade, max(shortest_track / 2.0, 0.0))
-
-    audio_inputs: List[str] = []
-    audio_filters: List[str] = []
-    for index, track in enumerate(tracks, start=1):
-        audio_inputs.extend(["-i", str(track)])
-        audio_filters.append(
-            f"[{index}:a]aformat=sample_rates=48000:channel_layouts=stereo[a{index}]"
-        )
-
-    if len(tracks) == 1:
-        if effective_fade > 0.0:
-            audio_filters.append(
-                f"[a1]afade=t=in:st=0:d={effective_fade:.3f},"
-                f"afade=t=out:st={max(track_durations[0] - effective_fade, 0.0):.3f}:d={effective_fade:.3f}[audio]"
-            )
-        else:
-            audio_filters.append("[a1]anull[audio]")
-    else:
-        if effective_fade > 0.0:
-            audio_filters[0] = f"[1:a]aformat=sample_rates=48000:channel_layouts=stereo,afade=t=in:st=0:d={effective_fade:.3f}[a1]"
-            audio_filters[-1] = (
-                f"[{len(tracks)}:a]aformat=sample_rates=48000:channel_layouts=stereo,"
-                f"afade=t=out:st={max(track_durations[-1] - effective_fade, 0.0):.3f}:d={effective_fade:.3f}[a{len(tracks)}]"
-            )
-
-        current_label = "a1"
-        for index in range(2, len(tracks) + 1):
-            next_label = f"a{index}"
-            output_label = f"x{index}"
-            audio_filters.append(
-                f"[{current_label}][{next_label}]acrossfade=d={effective_fade:.3f}:c1=tri:c2=tri[{output_label}]"
-            )
-            current_label = output_label
-        audio_filters.append(f"[{current_label}]anull[audio]")
-
-    overlay = (
-        "[0:v]scale=1920:1080,format=yuv420p,"
-        "drawbox=x=0:y=0:w=300:h=ih:color=black@0.54:t=fill,"
-        "drawbox=x=16:y=22:w=268:h=66:color=#111111@0.95:t=fill,"
-        "drawbox=x=16:y=102:w=268:h=710:color=#111111@0.92:t=fill,"
-        "drawbox=x=16:y=826:w=268:h=230:color=#111111@0.95:t=fill,"
-        f"drawtext=fontfile='{info_font}':text='Now Playing':x=28:y=38:fontsize=34:fontcolor=white,"
-        f"drawtext=fontfile='{info_font}':text='Artist\\:':x=28:y=140:fontsize=25:fontcolor=white,"
-        f"drawtext=fontfile='{info_font}':textfile='{artist}':reload=1:x=28:y=172:fontsize=23:fontcolor=white,"
-        f"drawtext=fontfile='{info_font}':text='Title\\:':x=28:y=224:fontsize=25:fontcolor=white,"
-        f"drawtext=fontfile='{info_font}':textfile='{track_title}':reload=1:x=28:y=256:fontsize=23:fontcolor=white,"
-        f"drawtext=fontfile='{info_font}':text='Album\\:':x=28:y=308:fontsize=25:fontcolor=white,"
-        f"drawtext=fontfile='{info_font}':textfile='{album}':reload=1:x=28:y=340:fontsize=23:fontcolor=white,"
-        f"drawtext=fontfile='{info_font}':text='Label\\:':x=28:y=392:fontsize=25:fontcolor=white,"
-        f"drawtext=fontfile='{info_font}':textfile='{label}':reload=1:x=28:y=424:fontsize=23:fontcolor=white,"
-        f"drawtext=fontfile='{info_font}':text='Year\\:':x=28:y=476:fontsize=25:fontcolor=white,"
-        f"drawtext=fontfile='{info_font}':textfile='{year}':reload=1:x=28:y=508:fontsize=23:fontcolor=white,"
-        f"drawtext=fontfile='{info_font}':text='BPM\\:':x=28:y=560:fontsize=25:fontcolor=white,"
-        f"drawtext=fontfile='{info_font}':textfile='{bpm}':reload=1:x=28:y=592:fontsize=23:fontcolor=white,"
-        "drawbox=x=320:y=h/2-120:w=w-420:h=240:color=black@0.44:t=fill,"
-        f"drawtext=fontfile='{title_font}':textfile='{center_title}':reload=1:"
-        "x=(w-text_w)/2:y=(h-text_h)/2:fontsize=80:fontcolor=white:shadowcolor=black:shadowx=2:shadowy=2[video]"
+    `settings` provides video_bitrate, video_bufsize, video_fps, video_size,
+    video_preset, encoder_threads, rc_lookahead, audio_bitrate,
+    keyframe_seconds and network_timeout (see config.OPTIONS).
+    """
+    fps = f"{settings.video_fps:g}"
+    scale_out = "" if settings.video_size == LAYOUT_SIZE else f",scale={settings.video_size.replace('x', ':')}"
+    video = (
+        # Renumber frames so the looped background has monotonic timestamps.
+        "[0:v]setpts=N/FRAME_RATE/TB[bg];"
+        f"color=c=white:s={CENTER_W}x{CENTER_H}:r={fps}[white];"
+        "[white][2:v]alphamerge[title];"
+        f"[bg][title]overlay=0:{CENTER_Y}:format=yuv420[withtitle];"
+        f"[withtitle][1:v]overlay={PANEL_X}:0:format=yuv420"
+        + scale_out
+        # Throttle output to wall-clock speed so live destinations stay fed
+        # steadily and the overlay animation stays in sync with what is heard.
+        + (",realtime" if realtime else "")
+        + "[vout]"
     )
-    filter_complex = ";".join([overlay, *audio_filters])
+    audio = "[3:a]arealtime[aout]" if realtime else "[3:a]anull[aout]"
+
+    bitrate = settings.video_bitrate
+    # Buffer = 1s of bitrate (OBS's CBR default) keeps the rate steady second to second.
+    bufsize = settings.video_bufsize or bitrate
+    x264_params = []
+    if output_format == "mpegts":
+        # MPEG-TS has no global header: repeat SPS/PPS on keyframes so a
+        # viewer joining mid-stream can decode. FLV/RTMP carries them already.
+        x264_params.append("repeat-headers=1")
+    if settings.rc_lookahead is not None:
+        x264_params.append(f"rc-lookahead={settings.rc_lookahead}")
+    # Constant bitrate: ingest servers expect a steady rate.
+    x264_params.append("nal-hrd=cbr")
+
+    is_network = stream_url.split(":", 1)[0].lower() in {"rtmp", "rtmps", "rtmpt", "rtmpe"}
+    network = ["-rw_timeout", str(int(settings.network_timeout * 1_000_000))] if is_network else []
+
     return [
         "ffmpeg",
         "-hide_banner",
         "-loglevel",
         "warning",
+        # Machine-readable progress on stdout, read by the stall watchdog.
+        "-progress",
+        "pipe:1",
+        "-stats_period",
+        "1",
         "-stream_loop",
         "-1",
         "-i",
         str(background_video),
-        *audio_inputs,
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "rgba",
+        "-video_size",
+        f"{PANEL_W}x{CANVAS_H}",
+        "-framerate",
+        fps,
+        "-i",
+        f"pipe:{panel_fd}",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "gray",
+        "-video_size",
+        f"{CENTER_W}x{CENTER_H}",
+        "-framerate",
+        fps,
+        "-i",
+        f"pipe:{title_fd}",
+        "-f",
+        PCM_FORMAT,
+        "-ar",
+        str(PCM_SAMPLE_RATE),
+        "-ac",
+        str(PCM_CHANNELS),
+        "-i",
+        "pipe:0",
         "-filter_complex",
-        filter_complex,
+        f"{video};{audio}",
         "-map",
-        "[video]",
+        "[vout]",
         "-map",
-        "[audio]",
+        "[aout]",
         "-c:v",
         "libx264",
         "-preset",
-        "veryfast",
-        "-crf",
-        "23",
+        settings.video_preset,
+        "-b:v",
+        bitrate,
+        "-maxrate",
+        bitrate,
+        "-bufsize",
+        bufsize,
+        "-x264-params",
+        ":".join(x264_params),
+        "-threads",
+        str(settings.encoder_threads),
         "-pix_fmt",
         "yuv420p",
+        "-r",
+        fps,
+        "-force_key_frames",
+        f"expr:gte(t,n_forced*{settings.keyframe_seconds:g})",
         "-c:a",
         "aac",
+        "-b:a",
+        settings.audio_bitrate,
         "-ar",
         "48000",
         "-ac",
         "2",
         "-shortest",
+        *network,
+        *(["-t", f"{duration:g}"] if duration else []),
         "-f",
         output_format,
         stream_url,

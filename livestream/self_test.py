@@ -9,8 +9,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
-from .constants import DEFAULT_OVERLAY_DIR
-from .media import extract_track_fields, ffprobe_json, find_audio_files, probe_duration_seconds, write_playlist, write_title
+from .media import extract_track_fields, ffprobe_json, find_audio_files, probe_duration_seconds, write_playlist
 
 
 @dataclass
@@ -35,11 +34,6 @@ def parse_args() -> argparse.Namespace:
         "--playlist-file",
         default=None,
         help="Playlist file used for concat decode checks.",
-    )
-    parser.add_argument(
-        "--overlay-dir",
-        default=None,
-        help="Directory where overlay text files are written.",
     )
     parser.add_argument("--rtmp-url", default=None, help="Optional RTMP/RTMPS URL for connectivity precheck.")
     parser.add_argument(
@@ -73,8 +67,6 @@ def parse_args() -> argparse.Namespace:
         args.music_dir = config.get("music_dir")
     if args.playlist_file is None:
         args.playlist_file = config.get("playlist_file", "/tmp/music_self_test_playlist.txt")
-    if args.overlay_dir is None:
-        args.overlay_dir = config.get("overlay_dir", str(DEFAULT_OVERLAY_DIR))
     if args.rtmp_url is None:
         args.rtmp_url = config.get("rtmp_url")
 
@@ -168,26 +160,6 @@ def check_playlist_decode(playlist_path: Path, tracks: List[Path], sample_tracks
     return f"Decoded {len(sample)} track(s) from concat playlist for {decode_seconds:.1f}s"
 
 
-def check_overlay_write(overlay_dir: Path) -> str:
-    overlay_dir.mkdir(parents=True, exist_ok=True)
-    files = {
-        "center_title.txt": "Self test center title",
-        "artist.txt": "Self Test Artist",
-        "title.txt": "Self Test Track",
-        "album.txt": "Self Test Album",
-        "label.txt": "Self Test Label",
-        "year.txt": "2026",
-        "bpm.txt": "128",
-    }
-    for name, expected in files.items():
-        path = overlay_dir / name
-        write_title(path, expected)
-        actual = path.read_text(encoding="utf-8")
-        if actual != expected:
-            raise RuntimeError(f"Overlay file verification failed: {path}")
-    return f"Wrote and verified {len(files)} overlay text files"
-
-
 def check_rtmp_connectivity(rtmp_url: Optional[str]) -> str:
     if not rtmp_url:
         raise SkipCheck("No rtmp-url provided; skipping network precheck")
@@ -206,6 +178,66 @@ def check_rtmp_connectivity(rtmp_url: Optional[str]) -> str:
     return f"Connected to {parsed.hostname}:{port} ({parsed.scheme})"
 
 
+ENCODER_TEST_SECONDS = 20.0
+MIN_ENCODER_SPEED = 1.2  # headroom above real time for other load on the machine
+
+
+def check_encoder_speed(config_path: Optional[str]) -> str:
+    """Encode with the configured settings as fast as possible; must beat real time."""
+    if not config_path:
+        raise SkipCheck("No --config given; skipping encoder speed test")
+    import threading
+
+    from .config import parse_args as parse_stream_args
+    from .ffmpeg import PCM_CHANNELS, PCM_SAMPLE_RATE
+    from .runner import OverlayFeed, prepare_background, start_encoder
+
+    settings = parse_stream_args(["--config", config_path, "--rtmp-url", "-"])
+    background = prepare_background(settings)
+    overlay = OverlayFeed(settings.video_fps, 0.0, announce)
+    overlay.renderer.on_track({"artist": "Self Test Artist", "title": "Self Test Title", "album": "Album", "year": "2026"}, None)
+
+    process, panel_fd, title_fd = start_encoder(
+        background, "-", "null", settings, realtime=False, duration=ENCODER_TEST_SECONDS
+    )
+    stop = threading.Event()
+
+    def feed_overlay() -> None:
+        try:
+            overlay.stream(panel_fd, title_fd, stop)
+        except OSError:
+            pass
+
+    overlay_thread = threading.Thread(target=feed_overlay, daemon=True)
+    started = time.monotonic()
+    overlay_thread.start()
+    silence = bytes(int(PCM_SAMPLE_RATE * PCM_CHANNELS * 4 * ENCODER_TEST_SECONDS))
+    try:
+        try:
+            process.stdin.write(silence)
+            process.stdin.close()
+        except BrokenPipeError:
+            pass  # encoder reached -t before consuming all of it
+        process.stdout.read()
+        process.wait(timeout=120)
+    finally:
+        stop.set()
+        if process.poll() is None:
+            process.kill()
+    elapsed = time.monotonic() - started
+    overlay_thread.join(timeout=5)
+    if process.returncode != 0:
+        raise RuntimeError(f"Encoder failed with exit code {process.returncode}")
+    speed = ENCODER_TEST_SECONDS / elapsed
+    summary = (
+        f"{speed:.2f}x real time with preset={settings.video_preset} fps={settings.video_fps:g} "
+        f"size={settings.video_size} threads={settings.encoder_threads or 'auto'}"
+    )
+    if speed < MIN_ENCODER_SPEED:
+        raise RuntimeError(f"Too slow: {summary}. Use a faster video_preset or lower video_fps in config.json")
+    return summary
+
+
 def print_result(result: CheckResult) -> None:
     announce(
         f"[{result.status}] {result.name} ({result.duration_seconds:.2f}s) - {result.detail}"
@@ -216,7 +248,6 @@ def main() -> int:
     args = parse_args()
     music_dir = Path(args.music_dir)
     playlist_path = Path(args.playlist_file)
-    overlay_dir = Path(args.overlay_dir)
 
     results: List[CheckResult] = []
 
@@ -253,9 +284,9 @@ def main() -> int:
     results.append(playlist_result)
     print_result(playlist_result)
 
-    overlay_result = run_check("Overlay Write", lambda: check_overlay_write(overlay_dir))
-    results.append(overlay_result)
-    print_result(overlay_result)
+    encoder_result = run_check("Encoder Speed", lambda: check_encoder_speed(args.config))
+    results.append(encoder_result)
+    print_result(encoder_result)
 
     rtmp_result = run_check("RTMP Connectivity", lambda: check_rtmp_connectivity(args.rtmp_url))
     results.append(rtmp_result)

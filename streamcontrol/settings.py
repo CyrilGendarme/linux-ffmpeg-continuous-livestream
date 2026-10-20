@@ -5,8 +5,20 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "dev-secret-key")
 DEBUG = os.environ.get("DJANGO_DEBUG", "1") == "1"
-ALLOWED_HOSTS = ["*"]
+ALLOWED_HOSTS = [host.strip() for host in os.environ.get("CONTROL_ALLOWED_HOSTS", "*").split(",") if host.strip()]
 INSTANCE_API_KEY = os.environ.get("INSTANCE_API_KEY", "test-secret-key")
+
+# The stream config edited by the web UI, and the runner's working directory
+# (relative paths in the config are resolved against it).
+STREAM_WORKDIR = BASE_DIR
+STREAM_CONFIG_PATH = Path(os.environ.get("STREAM_CONFIG_PATH", str(BASE_DIR / "config.json")))
+
+# Served over HTTPS only.
+SESSION_COOKIE_SECURE = True
+CSRF_COOKIE_SECURE = True
+SECURE_CONTENT_TYPE_NOSNIFF = True
+SECURE_REFERRER_POLICY = "no-referrer"
+X_FRAME_OPTIONS = "DENY"
 
 INSTALLED_APPS = [
     "django.contrib.admin",

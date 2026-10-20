@@ -46,14 +46,6 @@ Edit `config.json`:
   "music_dir": "/srv/music",
   "background_video": "/srv/video/background.mp4",
   "rtmp_url": "rtmp://live.restream.io/live/YOUR_RESTREAM_KEY",
-  "title_file": "/tmp/music_livestream_overlay/center_title.txt",
-  "playlist_file": "/tmp/music_playlist.txt",
-  "overlay_dir": "/tmp/music_livestream_overlay",
-  "title_font": "submodules/obscustomsetup/fonts/Staatliches-Regular.ttf",
-  "info_font": "submodules/obscustomsetup/fonts/DMSans.ttf",
-  "type_ms": 80,
-  "erase_ms": 40,
-  "title_hold": 1.8,
   "restart_delay": 2.0,
   "track_fade_seconds": 3.0
 }
@@ -126,3 +118,27 @@ Environment=PYTHONUNBUFFERED=1
 [Install]
 WantedBy=multi-user.target
 ```
+
+## Settings page (HTTPS)
+
+Every `config.json` setting, profiles included, can be edited from a web page served over HTTPS by the VPS.
+The admin secret is needed both to **view** the settings (they contain stream keys) and for **every save**;
+5 wrong secrets within 10 minutes lock that client out for the rest of the window. Values are validated on the
+server (types, ranges, paths that must exist), the file is replaced atomically, and the previous version is kept as
+`config.json.bak`. Tick "Restart stream to apply" to restart the stream service after saving.
+
+Install it on the VPS as a systemd user service (a strong secret is generated and printed once):
+
+```bash
+pip install -r requirements.txt
+python3 -m livestream.service install-control \
+  --tls-cert /etc/letsencrypt/live/<domain>/fullchain.pem \
+  --tls-key  /etc/letsencrypt/live/<domain>/privkey.pem     # omit both for a self-signed certificate
+sudo ufw allow 8443/tcp
+```
+
+Then open `https://<domain>:8443/config/`. The secret and settings live in `~/.config/music-livestream/control.env`
+(mode 600). Manage it with `python3 -m livestream.service control-status | control-logs | uninstall-control`.
+
+For local development, the "Backend: Control API" launch configuration runs it with `DJANGO_DEBUG=1`
+on `https://127.0.0.1:8443/config/` only.

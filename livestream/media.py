@@ -33,11 +33,6 @@ def write_playlist(tracks: Iterable[Path], playlist_path: Path) -> None:
             handle.write(f"file '{escape_concat_path(track)}'\n")
 
 
-def write_title(title_file: Path, text: str) -> None:
-    title_file.parent.mkdir(parents=True, exist_ok=True)
-    title_file.write_text(text, encoding="utf-8")
-
-
 def ffprobe_json(path: Path) -> dict:
     cmd = ["ffprobe", "-v", "error", "-show_format", "-show_streams", "-print_format", "json", str(path)]
     proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
@@ -85,10 +80,31 @@ def extract_track_fields(track: Path, info: dict) -> Dict[str, str]:
     display_title = format_track_name(track, info)
     return {
         "center": display_title,
-        "artist": artist or "-",
+        "artist": artist,
         "title": title or track.stem,
-        "album": album or "-",
-        "label": label or "-",
-        "year": year or "-",
-        "bpm": bpm or "-",
+        "album": album,
+        "label": label,
+        "year": year,
+        "bpm": bpm,
     }
+
+
+def extract_cover(track: Path):
+    """Embedded cover art of a track as a PIL image, or None if it has none."""
+    from io import BytesIO
+
+    from PIL import Image
+
+    proc = subprocess.run(
+        ["ffmpeg", "-nostdin", "-v", "error", "-i", str(track), "-map", "0:v:0", "-frames:v", "1",
+         "-f", "image2pipe", "-c:v", "png", "-"],
+        capture_output=True,
+    )
+    if proc.returncode != 0 or not proc.stdout:
+        return None
+    try:
+        image = Image.open(BytesIO(proc.stdout))
+        image.load()
+        return image
+    except OSError:
+        return None

@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Stream Settings</title>
+<style>
+  :root {
+    --bg: #f4f4f2; --surface: #ffffff; --surface-2: #f8f8f6; --text: #1b1b1b; --muted: #66665f;
+    --border: #deddd6; --accent: #c31530; --accent-text: #ffffff; --ok: #1f7a3a; --warn: #9a6400;
+    --error: #b3261e; --focus: #c3153055; --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111111; --surface: #1a1a1a; --surface-2: #202020; --text: #ededea; --muted: #a3a39b;
+      --border: #2e2e2b; --accent: #e0334d; --accent-text: #ffffff; --ok: #5cc27a; --warn: #e2a83d;
+      --error: #ff7a70; --focus: #e0334d66;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .wrap { max-width: 920px; margin: 0 auto; padding: 24px 16px 120px; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+  h1 { font-size: 22px; margin: 0; letter-spacing: .5px; }
+  h2 { font-size: 15px; margin: 0 0 12px; text-transform: uppercase; letter-spacing: 1.5px; color: var(--muted); }
+  .pill { font-size: 13px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); color: var(--muted); }
+  .pill.active { color: var(--ok); border-color: currentColor; }
+  .pill.failed { color: var(--error); border-color: currentColor; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; margin-bottom: 16px; }
+  .unlock { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .unlock input { flex: 1 1 240px; }
+  .field { display: grid; grid-template-columns: 220px 1fr; gap: 4px 16px; padding: 10px 0; border-top: 1px solid var(--border); }
+  .field:first-of-type { border-top: 0; }
+  .field label { font-weight: 600; padding-top: 7px; }
+  .field .req { color: var(--accent); }
+  .help { grid-column: 2; font-size: 13px; color: var(--muted); }
+  .err { grid-column: 2; font-size: 13px; color: var(--error); font-weight: 600; }
+  .field.invalid input, .field.invalid select { border-color: var(--error); }
+  input[type=text], input[type=password], input[type=number], select {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--surface-2); color: var(--text); font: inherit; min-width: 0;
+  }
+  input:focus, select:focus, button:focus-visible { outline: 3px solid var(--focus); outline-offset: 1px; }
+  .with-toggle { display: flex; gap: 6px; }
+  button { font: inherit; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-2);
+           color: var(--text); padding: 8px 14px; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
+  button.small { padding: 4px 10px; font-size: 13px; white-space: nowrap; }
+  button.danger { color: var(--error); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .switch { display: inline-flex; align-items: center; gap: 8px; padding-top: 7px; }
+  .switch input { width: 18px; height: 18px; accent-color: var(--accent); }
+  .profile { border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-top: 12px; background: var(--surface-2); }
+  .profile-head { display: flex; gap: 8px; align-items: center; }
+  .profile-head input { font-weight: 600; }
+  .override { display: grid; grid-template-columns: minmax(140px, 220px) 1fr auto; gap: 8px; margin-top: 8px; align-items: start; }
+  .override .err, .override .help { grid-column: 1 / -1; }
+  .muted { color: var(--muted); }
+  .note { font-size: 13px; color: var(--muted); margin: 8px 0 0; }
+  .banner { padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; border: 1px solid currentColor; }
+  .banner.error { color: var(--error); } .banner.ok { color: var(--ok); } .banner.warn { color: var(--warn); }
+  .banner ul { margin: 6px 0 0; padding-left: 18px; }
+  footer { position: fixed; left: 0; right: 0; bottom: 0; background: var(--surface); border-top: 1px solid var(--border); }
+  footer .wrap { padding: 12px 16px; display: flex; gap: 12px; align-items: center; justify-content: flex-end; flex-wrap: wrap; }
+  footer .status { margin-right: auto; color: var(--muted); font-size: 13px; }
+  [hidden] { display: none !important; }
+  @media (max-width: 640px) {
+    .field { grid-template-columns: 1fr; }
+    .help, .err { grid-column: 1; }
+    .field label { padding-top: 0; }
+    .override { grid-template-columns: 1fr auto; }
+    .override select { grid-column: 1 / -1; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Stream settings</h1>
+    <span id="service" class="pill" hidden></span>
+  </header>
+
+  {% if server_problem %}
+  <div class="banner error">{{ server_problem }}</div>
+  {% endif %}
+  <div id="banner" class="banner" hidden></div>
+
+  <section class="card">
+    <h2>Admin secret</h2>
+    <form class="unlock" id="unlock-form" autocomplete="off">
+      <input type="password" id="secret" placeholder="Secret (INSTANCE_API_KEY)" aria-label="Admin secret" autocomplete="current-password">
+      <button type="submit" class="primary" id="load">Load settings</button>
+    </form>
+    <p class="note">The secret is needed to view the settings (they contain stream keys) and again for every save. It is never stored in the browser.</p>
+  </section>
+
+  <div id="editor" hidden>
+    <div id="groups"></div>
+
+    <section class="card">
+      <h2>Profiles</h2>
+      <div class="field">
+        <label for="active-profile">Active profile</label>
+        <select id="active-profile"></select>
+        <div class="help">Profiles override settings, e.g. a different destination and bitrate for Mixcloud. The stream uses the active profile.</div>
+        <div class="err" data-error="profile" hidden></div>
+      </div>
+      <div id="profiles"></div>
+      <div style="margin-top:12px"><button type="button" id="add-profile">Add profile</button></div>
+    </section>
+  </div>
+</div>
+
+<footer id="footer" hidden>
+  <div class="wrap">
+    <span class="status" id="dirty-status">No unsaved changes</span>
+    <label class="switch"><input type="checkbox" id="restart" checked> Restart stream to apply</label>
+    <button type="button" class="primary" id="save">Save settings</button>
+  </div>
+</footer>
+
+<script>
+(() => {
+  "use strict";
+  const $ = (selector) => document.querySelector(selector);
+  let options = [], groups = [], dirty = false;
+
+  function el(tag, attributes = {}, ...children) {
+    const node = document.createElement(tag);
+    for (const [key, value] of Object.entries(attributes)) {
+      if (key === "class") node.className = value;
+      else if (key === "text") node.textContent = value;
+      else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+      else if (value !== null && value !== undefined && value !== false) node.setAttribute(key, value === true ? "" : value);
+    }
+    for (const child of children) if (child) node.append(child);
+    return node;
+  }
+
+  function banner(kind, message, items) {
+    const box = $("#banner");
+    box.className = "banner " + kind;
+    box.replaceChildren(el("div", { text: message }));
+    if (items && items.length) box.append(el("ul", {}, ...items.map((item) => el("li", { text: item }))));
+    box.hidden = false;
+    box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  function setService(state) {
+    const pill = $("#service");
+    pill.hidden = !state;
+    pill.textContent = "Stream: " + state;
+    pill.className = "pill" + (state === "active" ? " active" : state === "failed" ? " failed" : "");
+  }
+
+  function markDirty() {
+    dirty = true;
+    $("#dirty-status").textContent = "Unsaved changes";
+  }
+
+  // ---- inputs built from the schema --------------------------------------
+  function defaultText(option) {
+    if (option.default === null || option.default === undefined) return option.nullable ? "automatic" : "";
+    return String(option.default);
+  }
+
+  function makeInput(option, value, id) {
+    if (option.type === "bool") {
+      const box = el("input", { type: "checkbox", id, onchange: markDirty });
+      box.checked = value === undefined ? Boolean(option.default) : Boolean(value);
+      box.dataset.kind = "bool";
+      return el("label", { class: "switch" }, box, el("span", { text: "Enabled" }));
+    }
+    if (option.choices && option.choices.length) {
+      const select = el("select", { id, onchange: markDirty });
+      if (!option.required) select.append(el("option", { value: "", text: "Default (" + defaultText(option) + ")" }));
+      for (const choice of option.choices) select.append(el("option", { value: choice, text: choice }));
+      select.value = value === undefined || value === null ? "" : String(value);
+      return select;
+    }
+    const numeric = option.type === "int" || option.type === "float";
+    const input = el("input", {
+      id, type: option.secret ? "password" : numeric ? "number" : "text",
+      step: option.type === "int" ? "1" : numeric ? "any" : null,
+      min: option.minimum, max: option.maximum,
+      placeholder: option.required ? "" : "Default: " + defaultText(option),
+      autocomplete: "off", spellcheck: "false", oninput: markDirty,
+    });
+    input.value = value === undefined || value === null ? "" : String(value);
+    input.dataset.kind = option.type;
+    if (!option.secret) return input;
+    const toggle = el("button", { type: "button", class: "small", text: "Show", "aria-label": "Show " + option.label });
+    toggle.addEventListener("click", () => {
+      input.type = input.type === "password" ? "text" : "password";
+      toggle.textContent = input.type === "password" ? "Show" : "Hide";
+    });
+    return el("div", { class: "with-toggle" }, input, toggle);
+  }
+
+  function readInput(container) {
+    const control = container.querySelector("input, select");
+    if (control.dataset.kind === "bool") return control.checked;
+    const raw = control.value.trim();
+    if (raw === "") return undefined;
+    if (control.dataset.kind === "int") return Number.parseInt(raw, 10);
+    if (control.dataset.kind === "float") return Number(raw);
+    return raw;
+  }
+
+  // ---- main settings -----------------------------------------------------
+  function renderGroups(config) {
+    const root = $("#groups");
+    root.replaceChildren();
+    for (const group of groups) {
+      const card = el("section", { class: "card" }, el("h2", { text: group }));
+      for (const option of options.filter((item) => item.group === group)) {
+        const id = "opt-" + option.name;
+        const holder = el("div", { "data-value": option.name }, makeInput(option, config[option.name], id));
+        const label = el("label", { for: id }, document.createTextNode(option.label));
+        if (option.required) label.append(el("span", { class: "req", text: " *" }));
+        card.append(el("div", { class: "field", "data-field": option.name },
+          label, holder,
+          el("div", { class: "help", text: option.help }),
+          el("div", { class: "err", "data-error": option.name, hidden: true })));
+      }
+      root.append(card);
+    }
+  }
+
+  // ---- profiles ----------------------------------------------------------
+  const overridable = () => options.filter((option) => option.profile_override);
+
+  function overrideRow(option, value) {
+    const select = el("select", { "aria-label": "Setting to override" });
+    for (const candidate of overridable()) select.append(el("option", { value: candidate.name, text: candidate.label }));
+    select.value = option.name;
+    const holder = el("div", { class: "override-value" }, makeInput(option, value, null));
+    const row = el("div", { class: "override", "data-option": option.name },
+      select, holder,
+      el("button", { type: "button", class: "small danger", text: "Remove", onclick: () => { row.remove(); markDirty(); } }),
+      el("div", { class: "err", hidden: true }));
+    select.addEventListener("change", () => {
+      const next = options.find((candidate) => candidate.name === select.value);
+      row.dataset.option = next.name;
+      holder.replaceChildren(makeInput(next, undefined, null));
+      markDirty();
+    });
+    return row;
+  }
+
+  function profileCard(name, overrides) {
+    const nameInput = el("input", { type: "text", value: name, "aria-label": "Profile name", maxlength: "40",
+                                     oninput: () => { markDirty(); refreshActiveProfiles(); } });
+    const rows = el("div", { class: "rows" });
+    for (const [key, value] of Object.entries(overrides || {})) {
+      const option = options.find((candidate) => candidate.name === key);
+      if (option) rows.append(overrideRow(option, value));
+    }
+    const card = el("div", { class: "profile" },
+      el("div", { class: "profile-head" }, nameInput,
+        el("button", { type: "button", class: "small danger", text: "Delete profile",
+                       onclick: () => { card.remove(); markDirty(); refreshActiveProfiles(); } })),
+      el("div", { class: "err", "data-profile-error": true, hidden: true }),
+      rows,
+      el("div", { style: "margin-top:8px" },
+        el("button", { type: "button", class: "small", text: "Add override",
+                       onclick: () => { rows.append(overrideRow(overridable()[0], undefined)); markDirty(); } })));
+    return card;
+  }
+
+  function refreshActiveProfiles(selected) {
+    const select = $("#active-profile");
+    const current = selected !== undefined ? selected : select.value;
+    select.replaceChildren(el("option", { value: "", text: "None (main settings)" }));
+    for (const input of document.querySelectorAll(".profile-head input")) {
+      const name = input.value.trim();
+      if (name) select.append(el("option", { value: name, text: name }));
+    }
+    select.value = [...select.options].some((option) => option.value === current) ? current : "";
+  }
+
+  function renderProfiles(config) {
+    const root = $("#profiles");
+    root.replaceChildren();
+    for (const [name, overrides] of Object.entries(config.profiles || {})) root.append(profileCard(name, overrides));
+    refreshActiveProfiles(config.profile || "");
+  }
+
+  // ---- collect / errors --------------------------------------------------
+  function collect() {
+    const config = {};
+    for (const holder of document.querySelectorAll("[data-value]")) {
+      const value = readInput(holder);
+      if (value !== undefined && !Number.isNaN(value)) config[holder.dataset.value] = value;
+    }
+    const profiles = {};
+    for (const card of document.querySelectorAll(".profile")) {
+      const name = card.querySelector(".profile-head input").value.trim();
+      const overrides = {};
+      for (const row of card.querySelectorAll(".override")) {
+        const value = readInput(row.querySelector(".override-value"));
+        if (value !== undefined && !Number.isNaN(value)) overrides[row.dataset.option] = value;
+      }
+      profiles[name] = overrides;
+    }
+    if (Object.keys(profiles).length) config.profiles = profiles;
+    const active = $("#active-profile").value;
+    if (active) config.profile = active;
+    return config;
+  }
+
+  function clearErrors() {
+    for (const node of document.querySelectorAll(".err")) { node.hidden = true; node.textContent = ""; }
+    for (const node of document.querySelectorAll(".invalid")) node.classList.remove("invalid");
+  }
+
+  function showErrors(errors) {
+    const unplaced = [];
+    for (const [path, message] of Object.entries(errors)) {
+      let target = null;
+      const parts = path.split(".");
+      if (parts[0] === "profiles" && parts.length >= 2) {
+        const card = [...document.querySelectorAll(".profile")]
+          .find((item) => item.querySelector(".profile-head input").value.trim() === parts[1]);
+        if (card && parts.length === 3) {
+          const row = card.querySelector(`.override[data-option="${CSS.escape(parts[2])}"]`);
+          target = row && row.querySelector(".err");
+        } else if (card) {
+          target = card.querySelector("[data-profile-error]");
+        }
+      } else {
+        target = document.querySelector(`[data-error="${CSS.escape(path)}"]`);
+      }
+      const label = path.startsWith("profiles.") ? path.replace(/^profiles\./, "Profile ") : (options.find((o) => o.name === path) || {}).label || path;
+      if (target) {
+        target.textContent = message;
+        target.hidden = false;
+        const field = target.closest(".field");
+        if (field) field.classList.add("invalid");
+      }
+      unplaced.push(label + ": " + message);
+    }
+    banner("error", "Not saved. Please fix these settings:", unplaced);
+  }
+
+  // ---- network -----------------------------------------------------------
+  async function call(method, body) {
+    const secret = $("#secret").value;
+    if (!secret) { banner("error", "Enter the admin secret first."); $("#secret").focus(); return null; }
+    const response = await fetch("/api/config/", {
+      method, cache: "no-store",
+      headers: Object.assign({ "X-Instance-Key": secret }, body ? { "Content-Type": "application/json" } : {}),
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    let data = {};
+    try { data = await response.json(); } catch (error) { /* non-JSON error page */ }
+    return { ok: response.ok, status: response.status, data };
+  }
+
+  async function load(event) {
+    event.preventDefault();
+    const button = $("#load");
+    button.disabled = true;
+    try {
+      const result = await call("GET");
+      if (!result) return;
+      if (!result.ok) { banner("error", result.data.detail || "Could not load the settings (HTTP " + result.status + ")."); return; }
+      renderGroups(result.data.config);
+      renderProfiles(result.data.config);
+      setService(result.data.service);
+      $("#editor").hidden = false;
+      $("#footer").hidden = false;
+      dirty = false;
+      $("#dirty-status").textContent = "Loaded from " + result.data.path;
+      $("#banner").hidden = true;
+      button.textContent = "Reload";
+    } catch (error) {
+      banner("error", "Network error: " + error.message);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  async function save() {
+    clearErrors();
+    const button = $("#save");
+    button.disabled = true;
+    try {
+      const result = await call("POST", { config: collect(), restart: $("#restart").checked });
+      if (!result) return;
+      if (result.status === 400 && result.data.errors) { showErrors(result.data.errors); return; }
+      if (!result.ok) { banner("error", result.data.detail || "Save failed (HTTP " + result.status + ")."); return; }
+      dirty = false;
+      $("#dirty-status").textContent = "All changes saved";
+      setService(result.data.service);
+      const changed = result.data.changed || [];
+      banner(result.data.message.includes("failed") ? "warn" : "ok", result.data.message,
+             changed.length ? ["Changed: " + changed.join(", ")] : []);
+    } catch (error) {
+      banner("error", "Network error: " + error.message);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  async function init() {
+    const response = await fetch("/api/config/schema/", { cache: "no-store" });
+    const data = await response.json();
+    options = data.options;
+    groups = data.groups;
+  }
+
+  $("#unlock-form").addEventListener("submit", load);
+  $("#save").addEventListener("click", save);
+  $("#add-profile").addEventListener("click", () => {
+    $("#profiles").append(profileCard("new-profile", {}));
+    markDirty();
+    refreshActiveProfiles();
+  });
+  $("#active-profile").addEventListener("change", markDirty);
+  window.addEventListener("beforeunload", (event) => { if (dirty) { event.preventDefault(); event.returnValue = ""; } });
+  init().catch((error) => banner("error", "Could not load the settings form: " + error.message));
+})();
+</script>
+</body>
+</html>

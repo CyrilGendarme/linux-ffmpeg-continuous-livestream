@@ -1,15 +1,23 @@
+import hashlib
+import os
+import queue
 import random
 import shutil
 import signal
 import subprocess
+import threading
 import time
 import sys
 from pathlib import Path
-from typing import Dict, List
+from typing import Callable, Dict, Iterator, Optional, Tuple
 
+from .audio_feed import AudioFeeder
 from .config import parse_args
-from .ffmpeg import build_ffmpeg_command
-from .media import extract_track_fields, ffprobe_json, find_audio_files, probe_duration_seconds, write_playlist, write_title
+from .ffmpeg import build_background_command, build_ffmpeg_command
+from .loudness import LoudnessNormalizer
+from .media import extract_cover, extract_track_fields, ffprobe_json, find_audio_files, probe_duration_seconds
+from .overlay import OverlayRenderer
+from .prerender import Prerenderer
 
 
 def announce(msg: str) -> None:
@@ -22,142 +30,242 @@ def ensure_dependencies() -> None:
             raise RuntimeError(f"Missing required tool: {tool}. Install FFmpeg first: sudo apt install ffmpeg")
 
 
-def write_overlay_files(overlay_files: Dict[str, Path], fields: Dict[str, str]) -> None:
-    for key, path in overlay_files.items():
-        value = fields.get(key, "")
-        write_title(path, value)
+def shuffled_forever(music_dir: Path, on_scan: Callable[[list], None] = lambda _tracks: None) -> Iterator[Path]:
+    """Yield tracks in random order, rescanning and reshuffling after each pass."""
+    while True:
+        tracks = find_audio_files(music_dir)
+        on_scan(tracks)
+        random.shuffle(tracks)
+        announce(f"Shuffled {len(tracks)} tracks")
+        yield from tracks
 
 
-def wait_with_process(process: subprocess.Popen, seconds: float, interval: float = 0.05) -> bool:
-    end_time = time.monotonic() + max(0.0, seconds)
-    while time.monotonic() < end_time:
-        if process.poll() is not None:
-            return False
-        time.sleep(interval)
-    return process.poll() is None
+def prepare_background(argv) -> Path:
+    """Pre-scaled, audio-less background loop at the output frame rate (cached)."""
+    cache_dir = Path(argv.cache_dir).expanduser()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    source = Path(argv.background_video)
+    if not source.exists():
+        raise FileNotFoundError(f"Background video not found: {source}")
+    stat = source.stat()
+    key = hashlib.sha1(
+        f"{source.resolve()}|{stat.st_size}|{stat.st_mtime}|{argv.video_fps}|{argv.background_bitrate}".encode()
+    ).hexdigest()[:12]
+    background = cache_dir / f"background-{key}.mp4"
+    if not background.exists():
+        announce(f"Preparing background loop once (cached in {cache_dir})...")
+        partial = background.with_suffix(".partial.mp4")
+        subprocess.run(
+            build_background_command(source, partial, argv.video_fps, argv.background_bitrate), check=True
+        )
+        partial.replace(background)
+    return background
 
 
-def animate_center_text(
-    process: subprocess.Popen,
-    center_file: Path,
-    text: str,
-    duration: float,
-    type_ms: float,
-    erase_ms: float,
-    hold_seconds: float,
-) -> bool:
-    started = time.monotonic()
-    safe_text = text or ""
+class OverlayFeed:
+    """Owns the overlay renderer (it survives encoder restarts) and streams its frames.
 
-    type_delay = max(0.02, type_ms / 1000.0)
-    erase_delay = max(0.02, erase_ms / 1000.0)
+    It also prefetches the next track's metadata and cover, and has the next
+    track change pre-rendered in the background (see livestream.prerender).
+    """
 
-    for index in range(1, len(safe_text) + 1):
-        write_title(center_file, safe_text[:index])
-        if not wait_with_process(process, type_delay):
-            return False
+    def __init__(self, fps: float, fade_seconds: float, log: Callable[[str], None]) -> None:
+        self.fps = fps
+        self.fade_seconds = fade_seconds
+        self.log = log
+        self.renderer = OverlayRenderer(fps)
+        self.prerenderer = Prerenderer(fps, self.renderer.cache, log)
+        self._events: "queue.Queue[tuple]" = queue.Queue()
+        self._lock = threading.Lock()
+        self._prefetched: Dict[Path, tuple] = {}
+        self._seeds: Dict[Path, int] = {}
+        self._next: Optional[Tuple[Path, int]] = None  # (track, events applied when it was announced)
+        self._events_applied = 0
+        self._current_end_frame: Optional[float] = None
+        self._reported = True
 
-    if not wait_with_process(process, hold_seconds):
-        return False
+    @staticmethod
+    def _load(track: Path) -> tuple:
+        try:
+            info = ffprobe_json(track)
+            fields = extract_track_fields(track, info)
+            duration = probe_duration_seconds(info, track)
+        except (subprocess.CalledProcessError, ValueError):
+            fields, duration = {"center": track.stem, "title": track.stem}, 0.0
+        return fields, extract_cover(track), duration
 
-    for index in range(len(safe_text), -1, -1):
-        write_title(center_file, safe_text[:index])
-        if not wait_with_process(process, erase_delay):
-            return False
+    def upcoming(self, track: Path) -> None:
+        """The feeder knows the next track: prefetch it now, pre-render its transition later."""
+        announced_at = self._events_applied
 
-    elapsed = time.monotonic() - started
-    remaining = duration - elapsed
-    if remaining > 0:
-        return wait_with_process(process, remaining)
-    return process.poll() is None
+        def prefetch() -> None:
+            loaded = self._load(track)
+            with self._lock:
+                self._prefetched[track] = loaded
+                self._next = (track, announced_at)
+
+        threading.Thread(target=prefetch, name="overlay-prefetch", daemon=True).start()
+
+    def track_started(self, track: Path) -> Dict[str, str]:
+        with self._lock:
+            loaded = self._prefetched.pop(track, None)
+            seed = self._seeds.pop(track, None)
+        fields, cover, duration = loaded or self._load(track)
+        self._events.put((track, fields, cover, duration, seed))
+        return fields
+
+    def _apply_events(self) -> None:
+        while not self._events.empty():
+            track, fields, cover, duration, seed = self._events.get_nowait()
+            self.renderer.cache_hits = self.renderer.live_renders = 0
+            self.renderer.on_track(fields, cover, str(track), seed)
+            self._events_applied += 1
+            self._reported = False
+            self._current_end_frame = self.renderer.frame + max(0.0, duration - self.fade_seconds) * self.fps
+
+    def _maybe_prerender(self) -> None:
+        """Once the current transition has finished, pre-render the next one."""
+        if not self._reported and self.renderer.settled():
+            self._reported = True
+            self.log(
+                f"Overlay: transition used {self.renderer.cache_hits} pre-rendered frame(s), "
+                f"{self.renderer.live_renders} rendered live"
+            )
+        with self._lock:
+            pending = self._next
+            if pending is None or self._events_applied <= pending[1] or not self.renderer.settled():
+                return
+            track = pending[0]
+            fields, cover, _duration = self._prefetched[track]
+            self._next = None
+            seed = int.from_bytes(os.urandom(4), "big")
+            self._seeds[track] = seed
+        remaining = (self._current_end_frame - self.renderer.frame) / self.fps if self._current_end_frame else 0.0
+        if remaining < 2.0:
+            return  # too late to help; it will be rendered live
+        event = {"fields": fields, "cover": cover, "cover_token": str(track), "seed": seed}
+        self.prerenderer.submit(self.renderer.snapshot(), event, remaining)
+
+    def stream(self, panel_fd: int, title_fd: int, stop: threading.Event) -> None:
+        """Write one panel frame and one title frame per video frame until stopped or the pipes break."""
+        with open(panel_fd, "wb", closefd=True) as panel, open(title_fd, "wb", closefd=True) as title:
+            while not stop.is_set():
+                self._apply_events()
+                self._maybe_prerender()
+                panel_bytes, title_bytes = self.renderer.next_frames()
+                panel.write(panel_bytes)
+                title.write(title_bytes)
+
+    def close(self) -> None:
+        self.prerenderer.close()
 
 
-def run_cycle(tracks: List[Path], argv) -> None:
-    playlist_file = Path(argv.playlist_file)
-    overlay_dir = Path(argv.overlay_dir)
-    overlay_files = {
-        "center": Path(argv.title_file),
-        "artist": overlay_dir / "artist.txt",
-        "title": overlay_dir / "title.txt",
-        "album": overlay_dir / "album.txt",
-        "label": overlay_dir / "label.txt",
-        "year": overlay_dir / "year.txt",
-        "bpm": overlay_dir / "bpm.txt",
-    }
-    background_video = Path(argv.background_video)
-
-    if not background_video.exists():
-        raise FileNotFoundError(f"Background video not found: {background_video}")
-
-    if not Path(argv.title_font).exists():
-        raise FileNotFoundError(f"Title font not found: {argv.title_font}")
-    if not Path(argv.info_font).exists():
-        raise FileNotFoundError(f"Info font not found: {argv.info_font}")
-
-    write_playlist(tracks, playlist_file)
-    write_overlay_files(
-        overlay_files,
-        {
-            "center": "",
-            "artist": "-",
-            "title": "-",
-            "album": "-",
-            "label": "-",
-            "year": "-",
-            "bpm": "-",
-        },
+def start_encoder(
+    background: Path, stream_url: str, output_format: str, settings, realtime: bool = True, duration: Optional[float] = None
+):
+    """Launch the encoder; returns (process, panel write fd, title write fd)."""
+    panel_read, panel_write = os.pipe()
+    title_read, title_write = os.pipe()
+    cmd = build_ffmpeg_command(
+        background, panel_read, title_read, stream_url, output_format, settings, realtime, duration
     )
+    process = subprocess.Popen(
+        cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, pass_fds=(panel_read, title_read)
+    )
+    os.close(panel_read)
+    os.close(title_read)
+    return process, panel_write, title_write
 
-    total_duration = 0.0
-    sequence: List[tuple[Path, float, Dict[str, str]]] = []
-    for track in tracks:
-        info = ffprobe_json(track)
-        duration = probe_duration_seconds(info, track)
-        fields = extract_track_fields(track, info)
-        sequence.append((track, duration, fields))
-        total_duration += duration
 
-    announce(f"Loaded {len(tracks)} tracks, total runtime ~{total_duration:.0f}s")
+class ProgressWatchdog:
+    """Reads FFmpeg's -progress output and reports how long since the last new frame."""
+
+    def __init__(self, process: subprocess.Popen) -> None:
+        self.last_frame = -1
+        self.last_change = time.monotonic()
+        threading.Thread(target=self._read, args=(process,), name="progress", daemon=True).start()
+
+    def _read(self, process: subprocess.Popen) -> None:
+        for line in process.stdout:
+            if line.startswith(b"frame="):
+                try:
+                    frame = int(line[6:])
+                except ValueError:
+                    continue
+                if frame > self.last_frame:
+                    self.last_frame = frame
+                    self.last_change = time.monotonic()
+
+    @property
+    def started(self) -> bool:
+        return self.last_frame > 0
+
+    def seconds_since_progress(self) -> float:
+        return time.monotonic() - self.last_change
+
+
+STARTUP_GRACE_SECONDS = 30.0
+
+
+def run_cycle(feeder: AudioFeeder, overlay: OverlayFeed, background: Path, argv) -> bool:
+    """Run one encoder process. Returns True when every track has been played."""
     announce(f"Starting FFmpeg stream to {argv.rtmp_url}")
+    process, panel_fd, title_fd = start_encoder(background, argv.rtmp_url, argv.output_format, argv)
+    watchdog = ProgressWatchdog(process)
 
-    ffmpeg_cmd = build_ffmpeg_command(
-        background_video,
-        [track for track, _duration, _fields in sequence],
-        [duration for _track, duration, _fields in sequence],
-        overlay_files,
-        argv.rtmp_url,
-        argv.output_format,
-        argv.title_font,
-        argv.info_font,
-        float(argv.track_fade_seconds),
-    )
-    process = subprocess.Popen(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    started: "queue.Queue[Path]" = queue.Queue()
+    stop = threading.Event()
+    finished = [False]
+
+    def feed_audio() -> None:
+        try:
+            finished[0] = feeder.feed(process.stdin, started.put, stop)
+        except (BrokenPipeError, ValueError, OSError):
+            pass  # encoder went away; the main loop reports it
+        finally:
+            try:
+                process.stdin.close()
+            except (BrokenPipeError, ValueError, OSError):
+                pass
+
+    def feed_overlay() -> None:
+        try:
+            overlay.stream(panel_fd, title_fd, stop)
+        except (BrokenPipeError, ValueError, OSError):
+            pass
+
+    threads = [
+        threading.Thread(target=feed_audio, name="audio-feed", daemon=True),
+        threading.Thread(target=feed_overlay, name="overlay-feed", daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+    audio_thread = threads[0]
+
+    def check_health() -> None:
+        limit = argv.stall_timeout if watchdog.started else argv.stall_timeout + STARTUP_GRACE_SECONDS
+        if watchdog.seconds_since_progress() > limit:
+            raise RuntimeError(f"No video frame output for {watchdog.seconds_since_progress():.0f}s (connection stalled?)")
 
     try:
-        for _track, duration, fields in sequence:
-            fields_for_panel = dict(fields)
-            fields_for_panel["center"] = ""
-            write_overlay_files(overlay_files, fields_for_panel)
-            announce(f"Now playing: {fields['center']}")
-            if duration <= 0:
-                duration = 1.0
-            if not animate_center_text(
-                process,
-                overlay_files["center"],
-                fields["center"],
-                duration,
-                argv.type_ms,
-                argv.erase_ms,
-                argv.title_hold,
-            ):
-                return
-        if process.poll() is None:
+        while process.poll() is None:
+            check_health()
             try:
-                process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                process.terminate()
-                process.wait(timeout=10)
+                track = started.get(timeout=0.5)
+            except queue.Empty:
+                if not audio_thread.is_alive() and finished[0]:
+                    # Audio is over; the looping video would keep the encoder going.
+                    time.sleep(1.0)
+                    process.send_signal(signal.SIGINT)
+                    process.wait(timeout=10)
+                    return True
+                continue
+            fields = overlay.track_started(track)  # metadata/cover usually prefetched already
+            announce(f"Now playing: {fields['center']}")
+        raise RuntimeError(f"FFmpeg exited with code {process.returncode}")
     finally:
+        stop.set()
         if process.poll() is None:
             process.terminate()
             try:
@@ -165,14 +273,8 @@ def run_cycle(tracks: List[Path], argv) -> None:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=10)
-
-        if process.stdout is not None:
-            try:
-                output = process.stdout.read()
-                if output:
-                    print(output)
-            except Exception:
-                pass
+        for thread in threads:
+            thread.join(timeout=5)
 
 
 def handle_shutdown(signum, frame) -> None:
@@ -184,22 +286,54 @@ def main() -> int:
     signal.signal(signal.SIGINT, handle_shutdown)
     signal.signal(signal.SIGTERM, handle_shutdown)
 
+    feeder: Optional[AudioFeeder] = None
+    overlay: Optional[OverlayFeed] = None
     try:
         ensure_dependencies()
+        if args.profile:
+            announce(f"Using profile: {args.profile}")
+        background = prepare_background(args)
+        overlay = OverlayFeed(args.video_fps, float(args.track_fade_seconds), announce)
+
+        normalizer = None
+        if args.loudness_normalize:
+            normalizer = LoudnessNormalizer(
+                Path(args.cache_dir).expanduser() / "loudness.json",
+                args.loudness_target,
+                args.loudness_max_gain,
+                announce,
+            )
+        feeder = AudioFeeder(
+            shuffled_forever(Path(args.music_dir), normalizer.scan_library if normalizer else lambda _tracks: None),
+            float(args.track_fade_seconds),
+            announce,
+            gain_for=normalizer.gain_db if normalizer else (lambda _track, _may_block: 0.0),
+            on_upcoming=lambda track: (normalizer.prioritize(track) if normalizer else None, overlay.upcoming(track)),
+        )
+
         while True:
-            tracks = find_audio_files(Path(args.music_dir))
-            random.shuffle(tracks)
             try:
-                run_cycle(tracks, args)
+                # The feeder keeps its place, so a restarted encoder resumes the same track.
+                if run_cycle(feeder, overlay, background, args):
+                    break
             except KeyboardInterrupt:
                 announce("Shutting down cleanly.")
                 break
             except Exception as exc:
-                announce(f"Stream cycle failed: {exc}")
-                time.sleep(args.restart_delay)
-                continue
-            time.sleep(args.restart_delay)
+                announce(f"Stream cycle failed: {exc}; restarting in {args.restart_delay}s")
+                time.sleep(float(args.restart_delay))
+    except KeyboardInterrupt:
+        announce("Shutting down cleanly.")
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
+    finally:
+        if feeder is not None:
+            feeder.close()
+        if overlay is not None:
+            overlay.close()
     return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

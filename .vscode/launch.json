@@ -98,6 +98,107 @@
         "DJANGO_DEBUG": "1"
       },
       "justMyCode": true
+    },
+    {
+      "name": "Music: Full stream stack (Mixcloud profile)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "livestream.runner",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "args": [
+        "--config",
+        "${workspaceFolder}/config.json",
+        "--profile",
+        "mixcloud"
+      ],
+      "justMyCode": true
+    },
+    {
+      "name": "Service: install",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "livestream.service",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "args": [
+        "install",
+        "--config",
+        "${workspaceFolder}/config.json"
+      ],
+      "justMyCode": true
+    },
+    {
+      "name": "Service: start",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "livestream.service",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "args": [
+        "start"
+      ],
+      "justMyCode": true
+    },
+    {
+      "name": "Service: stop",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "livestream.service",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "args": [
+        "stop"
+      ],
+      "justMyCode": true
+    },
+    {
+      "name": "Service: restart",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "livestream.service",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "args": [
+        "restart"
+      ],
+      "justMyCode": true
+    },
+    {
+      "name": "Service: status",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "livestream.service",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "args": [
+        "status"
+      ],
+      "justMyCode": true
+    },
+    {
+      "name": "Service: logs",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "livestream.service",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "args": [
+        "logs"
+      ],
+      "justMyCode": true
+    },
+    {
+      "name": "Service: uninstall",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "livestream.service",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "args": [
+        "uninstall"
+      ],
+      "justMyCode": true
     }
   ],
   "compounds": [
