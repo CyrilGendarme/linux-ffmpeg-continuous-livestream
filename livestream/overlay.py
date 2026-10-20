@@ -77,9 +77,13 @@ _FONT_CACHE: Dict[tuple, ImageFont.FreeTypeFont] = {}
 def _font(path: str, size: int, opsz: Optional[float]) -> ImageFont.FreeTypeFont:
     key = (path, size, opsz)
     if key not in _FONT_CACHE:
-        # RAQM (HarfBuzz) shapes text like Chrome; BASIC lacks GPOS kerning (sub-pixel differences).
-        layout = ImageFont.Layout.RAQM if features.check("raqm") else ImageFont.Layout.BASIC
-        font = ImageFont.truetype(path, size, layout_engine=layout)
+        # Pillow >= 9 removed ImageFont.Layout; older versions used it for RAQM/BASIC layout selection.
+        if hasattr(ImageFont, "Layout"):
+            # RAQM (HarfBuzz) shapes text like Chrome; BASIC lacks GPOS kerning (sub-pixel differences).
+            layout = ImageFont.Layout.RAQM if features.check("raqm") else ImageFont.Layout.BASIC
+            font = ImageFont.truetype(path, size, layout_engine=layout)
+        else:
+            font = ImageFont.truetype(path, size)
         if opsz is not None:
             axes = font.get_variation_axes()
             font.set_variation_by_axes(
