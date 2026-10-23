@@ -210,7 +210,7 @@ STARTUP_GRACE_SECONDS = 30.0
 
 def run_cycle(feeder: AudioFeeder, overlay: OverlayFeed, background: Path, argv) -> bool:
     """Run one encoder process. Returns True when every track has been played."""
-    announce(f"Starting FFmpeg stream to {argv.rtmp_url}")
+    announce("Starting FFmpeg stream")
     process, panel_fd, title_fd = start_encoder(background, argv.rtmp_url, argv.output_format, argv)
     watchdog = ProgressWatchdog(process)
 

@@ -1,0 +1,277 @@
+logLevel: info
+logDestinations:
+- stdout
+logStructured: false
+logFile: mediamtx.log
+sysLogPrefix: mediamtx
+dumpPackets: false
+readTimeout: 10s
+writeTimeout: 10s
+writeQueueSize: 512
+udpMaxPayloadSize: 1452
+udpReadBufferSize: 0
+runOnConnect: null
+runOnConnectRestart: false
+runOnDisconnect: null
+authMethod: internal
+authInternalUsers:
+- user: any
+  pass: null
+  ips: []
+  permissions: []
+- user: any
+  pass: null
+  ips:
+  - 127.0.0.1
+  - ::1
+  permissions:
+  - action: api
+  - action: metrics
+  - action: pprof
+  - action: read
+    path: laptop
+  - action: read
+    path: radio
+- user: laptop_streamer
+  pass: LAPTOP_SECRET_GRATUIT_CHAISE_TEU_WHAT
+  ips: []
+  permissions:
+  - action: publish
+    path: laptop
+- user: radio_publisher
+  pass: RADIO_SECRET_GRATUIT_WHAT_ASIR_DEAN
+  ips: []
+  permissions:
+  - action: publish
+    path: radio
+- user: stream_switcher
+  pass: SWITCHER_SECRET_GRATUIT_MA_POTTERIE_HIER
+  ips:
+  - 127.0.0.1
+  - ::1
+  permissions:
+  - action: read
+    path: radio
+  - action: read
+    path: laptop
+- user: any
+  pass: null
+  ips:
+  - 127.0.0.1
+  - ::1
+  permissions:
+  - action: publish
+    path: radio
+authHTTPAddress: null
+authHTTPFingerprint: null
+authHTTPExclude: []
+authJWTJWKS: null
+authJWTJWKSFingerprint: null
+authJWTClaimKey: mediamtx_permissions
+authJWTExclude: []
+authJWTIssuer: null
+authJWTAudience: null
+api: true
+apiAddress: 127.0.0.1:9997
+apiEncryption: false
+apiServerKey: server.key
+apiServerCert: server.crt
+apiAllowOrigins: []
+apiTrustedProxies: []
+metrics: false
+metricsAddress: :9998
+metricsEncryption: false
+metricsServerKey: server.key
+metricsServerCert: server.crt
+metricsAllowOrigins: []
+metricsTrustedProxies: []
+pprof: false
+pprofAddress: :9999
+pprofEncryption: false
+pprofServerKey: server.key
+pprofServerCert: server.crt
+pprofAllowOrigins: []
+pprofTrustedProxies: []
+playback: false
+playbackAddress: :9996
+playbackEncryption: false
+playbackServerKey: server.key
+playbackServerCert: server.crt
+playbackAllowOrigins:
+- '*'
+playbackTrustedProxies: []
+rtsp: true
+rtspTransports:
+- udp
+- multicast
+- tcp
+rtspEncryption: 'no'
+rtspAddress: :8554
+rtspsAddress: :8322
+rtpAddress: :8000
+rtcpAddress: :8001
+multicastIPRange: 224.1.0.0/16
+multicastRTPPort: 8002
+multicastRTCPPort: 8003
+srtpAddress: :8004
+srtcpAddress: :8005
+multicastSRTPPort: 8006
+multicastSRTCPPort: 8007
+rtspServerKey: server.key
+rtspServerCert: server.crt
+rtspAuthMethods:
+- basic
+rtspTrustedProxies: []
+rtmp: true
+rtmpEncryption: 'no'
+rtmpAddress: :1935
+rtmpsAddress: :1936
+rtmpServerKey: server.key
+rtmpServerCert: server.crt
+rtmpTrustedProxies: []
+hls: true
+hlsAddress: :8888
+hlsEncryption: false
+hlsServerKey: server.key
+hlsServerCert: server.crt
+hlsAllowOrigins:
+- '*'
+hlsTrustedProxies: []
+hlsAlwaysRemux: false
+hlsVariant: lowLatency
+hlsSegmentCount: 7
+hlsSegmentDuration: 1s
+hlsPartDuration: 200ms
+hlsSegmentMaxSize: 50M
+hlsDirectory: ''
+hlsMuxerCloseAfter: 60s
+hlsCDNSecret: ''
+webrtc: true
+webrtcAddress: :8889
+webrtcEncryption: false
+webrtcServerKey: server.key
+webrtcServerCert: server.crt
+webrtcAllowOrigins:
+- '*'
+webrtcTrustedProxies: []
+webrtcLocalUDPAddress: :8189
+webrtcLocalTCPAddress: ''
+webrtcIPsFromInterfaces: true
+webrtcIPsFromInterfacesList: []
+webrtcIPsFromInterfacesExcludeList: []
+webrtcAdditionalHosts: []
+webrtcICEServers2: []
+webrtcSTUNGatherTimeout: 5s
+webrtcHandshakeTimeout: 10s
+webrtcTrackGatherTimeout: 2s
+srt: true
+srtAddress: :8890
+moq: true
+moqHTTP2Address: :8892
+moqHTTP3Address: :8892
+moqQUICAddress: :8893
+moqServerKey: auto.key
+moqServerCert: auto.crt
+moqAllowOrigins:
+- '*'
+moqTrustedProxies: []
+pathDefaults:
+  source: publisher
+  sourceFingerprint: null
+  sourceOnDemand: false
+  sourceOnDemandStartTimeout: 10s
+  sourceOnDemandCloseAfter: 10s
+  maxReaders: 0
+  srtReadPassphrase: null
+  useAbsoluteTimestamp: false
+  alwaysAvailable: false
+  alwaysAvailableTracks: []
+  alwaysAvailableFile: ''
+  alwaysAvailableRecorded: true
+  forward: []
+  record: false
+  recordPath: ./recordings/%path/%Y-%m-%d_%H-%M-%S-%f
+  recordFormat: fmp4
+  recordPartDuration: 1s
+  recordMaxPartSize: 50M
+  recordSegmentDuration: 1h
+  recordDeleteAfter: 1d
+  overridePublisher: true
+  srtPublishPassphrase: null
+  rtspDemuxMpegts: false
+  rtspTransport: automatic
+  rtspAnyPort: false
+  rtspRangeType: null
+  rtspRangeStart: null
+  rtspScale: null
+  rtspUDPSourcePortRange:
+  - 32768
+  - 60999
+  rtpSDP: null
+  moqTransport: quic
+  whepBearerToken: ''
+  whepSTUNGatherTimeout: 5s
+  whepHandshakeTimeout: 10s
+  whepTrackGatherTimeout: 2s
+  sourceRedirect: null
+  rpiCameraCamID: 0
+  rpiCameraSecondary: false
+  rpiCameraWidth: 1920
+  rpiCameraHeight: 1080
+  rpiCameraHFlip: false
+  rpiCameraVFlip: false
+  rpiCameraBrightness: 0
+  rpiCameraContrast: 1
+  rpiCameraSaturation: 1
+  rpiCameraSharpness: 1
+  rpiCameraExposure: normal
+  rpiCameraAWB: auto
+  rpiCameraAWBGains:
+  - 0
+  - 0
+  rpiCameraDenoise: 'off'
+  rpiCameraShutter: 0
+  rpiCameraMetering: centre
+  rpiCameraGain: 0
+  rpiCameraEV: 0
+  rpiCameraROI: null
+  rpiCameraHDR: false
+  rpiCameraTuningFile: null
+  rpiCameraMode: null
+  rpiCameraFPS: 30
+  rpiCameraAfMode: continuous
+  rpiCameraAfRange: normal
+  rpiCameraAfSpeed: normal
+  rpiCameraLensPosition: 0.0
+  rpiCameraAfWindow: null
+  rpiCameraFlickerPeriod: 0
+  rpiCameraTextOverlayEnable: false
+  rpiCameraTextOverlay: '%Y-%m-%d %H:%M:%S - MediaMTX'
+  rpiCameraCodec: auto
+  rpiCameraIDRPeriod: 60
+  rpiCameraBitrate: 5000000
+  rpiCameraH264Profile: auto
+  rpiCameraH264Level: '4.1'
+  rpiCameraMJPEGQuality: 60
+  runOnInit: null
+  runOnInitRestart: false
+  runOnDemand: null
+  runOnDemandRestart: false
+  runOnDemandStartTimeout: 10s
+  runOnDemandCloseAfter: 10s
+  runOnUnDemand: null
+  runOnAvailable: null
+  runOnAvailableRestart: false
+  runOnUnavailable: null
+  runOnOnline: null
+  runOnOnlineRestart: false
+  runOnOffline: null
+  runOnRead: null
+  runOnReadRestart: false
+  runOnUnread: null
+  runOnRecordSegmentCreate: null
+  runOnRecordSegmentComplete: null
+paths:
+  radio: null
+  laptop: null
+  all_others: null

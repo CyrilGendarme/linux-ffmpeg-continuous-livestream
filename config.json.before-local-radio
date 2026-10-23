@@ -1,0 +1,34 @@
+{
+  "music_dir": "/home/rdpuser/Music/33 rpm/",
+  "background_video": "submodules/obscustomsetup/assets/stream loop 1.mp4",
+  "rtmp_url": "rtmp://live.restream.io/live/re_11962011_event4e71a09d72fe43be80ca9d09bbcb856a",
+  "restart_delay": 2.0,
+  "track_fade_seconds": 3.0,
+  "video_bitrate": "4500k",
+  "video_fps": 25,
+  "video_size": "1920x1080",
+  "video_preset": "veryfast",
+  "encoder_threads": 2,
+  "rc_lookahead": 10,
+  "audio_bitrate": "160k",
+  "keyframe_seconds": 2,
+  "stall_timeout": 15,
+  "network_timeout": 10,
+  "loudness_normalize": true,
+  "loudness_target": -14,
+  "loudness_max_gain": 9,
+  "cache_dir": "~/.cache/music-livestream",
+  "profile": "restream",
+  "profiles": {
+    "restream": {
+      "rtmp_url": "rtmp://live.restream.io/live/re_11962011_event4e71a09d72fe43be80ca9d09bbcb856a",
+      "video_size": "1920x1080",
+      "video_bitrate": "4500k",
+      "audio_bitrate": "160k"
+    },
+    "local_preview": {
+      "rtmp_url": "udp://127.0.0.1:1234?pkt_size=1316",
+      "output_format": "mpegts"
+    }
+  }
+}
