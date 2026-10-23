@@ -599,6 +599,31 @@ class TypewriterTitle:
         return mask
 
 
+# Overlays reach FFmpeg as raw yuva420p, ready to blend: converting them here,
+# once per change, is far cheaper than FFmpeg converting every frame.
+# BT.601 limited range, like FFmpeg's own RGB -> YUV conversion.
+_LIMITED_Y = [16 + round(v * 219 / 255) for v in range(256)]
+_LIMITED_C = [128 + round((v - 128) * 224 / 255) for v in range(256)]
+# The title is white text: constant Y/U/V planes, the mask is its alpha.
+_TITLE_PLANES = bytes([235]) * (CENTER_W * CENTER_H) + bytes([128]) * (CENTER_W * CENTER_H // 2)
+
+
+def to_yuva420p(image: Image.Image) -> bytes:
+    """Raw yuva420p frame of an RGBA image (even width and height)."""
+    y, cb, cr = image.convert("RGB").convert("YCbCr").split()
+    return b"".join((
+        y.point(_LIMITED_Y).tobytes(),
+        cb.reduce(2).point(_LIMITED_C).tobytes(),
+        cr.reduce(2).point(_LIMITED_C).tobytes(),
+        image.getchannel("A").tobytes(),
+    ))
+
+
+def title_yuva420p(mask: Image.Image) -> bytes:
+    """Raw yuva420p frame of the white centre title from its alpha mask."""
+    return _TITLE_PLANES + mask.tobytes()
+
+
 def display_text(fields: Dict[str, str]) -> str:
     """typewriter_common.js getDisplayText() for an {artist, title} payload."""
     artist = (fields.get("artist") or "").strip()
@@ -687,8 +712,9 @@ class OverlayRenderer:
         return ("title", self.title.element.text)
 
     def render_key(self, key: tuple) -> bytes:
-        image = self.panel.render() if key[0] == "panel" else self.title.render()
-        return image.tobytes()
+        if key[0] == "panel":
+            return to_yuva420p(self.panel.render())
+        return title_yuva420p(self.title.render())
 
     def advance(self) -> None:
         self.sched.advance_to(self.frame * 1000.0 / self.fps)
@@ -703,7 +729,7 @@ class OverlayRenderer:
         return self.render_key(key)
 
     def next_frames(self) -> Tuple[bytes, bytes]:
-        """Advance one video frame; returns (panel RGBA bytes, centre alpha bytes)."""
+        """Advance one video frame; returns (panel, centre title) as raw yuva420p frames."""
         self.advance()
         panel_key = self.panel_key()
         if panel_key != self._panel_key:

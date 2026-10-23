@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import List, Optional
+from urllib.parse import urlsplit
 
 from .overlay import CANVAS_H, CENTER_H, CENTER_W, CENTER_Y, PANEL_W, PANEL_X
 
@@ -62,8 +63,24 @@ def build_background_command(source: Path, output: Path, fps: float, bitrate: st
     ]
 
 
-def _encoder_args(stream_url: str, output_format: str, settings) -> List[str]:
-    """Output encoding shared by the radio encoder and the switcher's output encoder."""
+# Quality of the radio's hop to a local MediaMTX (see is_local_rtmp): high
+# enough that the switcher's re-encode does not see the difference.
+INTERMEDIATE_CRF = 18
+
+
+def is_local_rtmp(url: str) -> bool:
+    """RTMP to this machine: the radio feeding MediaMTX, re-encoded by the switcher before leaving it."""
+    parts = urlsplit(url)
+    return parts.scheme.lower() == "rtmp" and parts.hostname in {"127.0.0.1", "localhost", "::1"}
+
+
+def _encoder_args(stream_url: str, output_format: str, settings, intermediate: bool = False) -> List[str]:
+    """Output encoding shared by the radio encoder and the switcher's output encoder.
+
+    `intermediate`: the stream is re-encoded downstream, so encode as cheaply
+    as possible (ultrafast, constant quality: bandwidth is free locally)
+    instead of at the destination's constant bitrate.
+    """
     fps = f"{settings.video_fps:g}"
     bitrate = settings.video_bitrate
     # Buffer = 1s of bitrate (OBS's CBR default) keeps the rate steady second to second.
@@ -73,21 +90,22 @@ def _encoder_args(stream_url: str, output_format: str, settings) -> List[str]:
         # MPEG-TS has no global header: repeat SPS/PPS on keyframes so a
         # viewer joining mid-stream can decode. FLV/RTMP carries them already.
         x264_params.append("repeat-headers=1")
-    if settings.rc_lookahead is not None:
-        x264_params.append(f"rc-lookahead={settings.rc_lookahead}")
-    # Constant bitrate: ingest servers expect a steady rate.
-    x264_params.append("nal-hrd=cbr")
+    if intermediate:
+        rate = ["-preset", "ultrafast", "-crf", str(INTERMEDIATE_CRF)]
+    else:
+        if settings.rc_lookahead is not None:
+            x264_params.append(f"rc-lookahead={settings.rc_lookahead}")
+        # Constant bitrate: ingest servers expect a steady rate.
+        x264_params.append("nal-hrd=cbr")
+        rate = ["-preset", settings.video_preset, "-b:v", bitrate, "-maxrate", bitrate, "-bufsize", bufsize]
 
     is_network = stream_url.split(":", 1)[0].lower() in {"rtmp", "rtmps", "rtmpt", "rtmpe"}
     network = ["-rw_timeout", str(int(settings.network_timeout * 1_000_000))] if is_network else []
 
     return [
         "-c:v", "libx264",
-        "-preset", settings.video_preset,
-        "-b:v", bitrate,
-        "-maxrate", bitrate,
-        "-bufsize", bufsize,
-        "-x264-params", ":".join(x264_params),
+        *rate,
+        *(["-x264-params", ":".join(x264_params)] if x264_params else []),
         "-threads", str(settings.encoder_threads),
         "-pix_fmt", "yuv420p",
         "-r", fps,
@@ -112,9 +130,9 @@ def build_ffmpeg_command(
 ) -> List[str]:
     """Long-running encoder.
 
-    Inputs: looped background video, the now-playing panel as raw RGBA frames
-    (pipe `panel_fd`), the centre title as a raw alpha mask (pipe `title_fd`),
-    and raw PCM audio on stdin. Overlay frames come from livestream.overlay.
+    Inputs: looped background video, the now-playing panel and the centre
+    title as raw yuva420p frames (pipes `panel_fd` and `title_fd`), and raw
+    PCM audio on stdin. Overlay frames come from livestream.overlay.
 
     `settings` provides video_bitrate, video_bufsize, video_fps, video_size,
     video_preset, encoder_threads, rc_lookahead, audio_bitrate,
@@ -125,9 +143,7 @@ def build_ffmpeg_command(
     video = (
         # Renumber frames so the looped background has monotonic timestamps.
         "[0:v]setpts=N/FRAME_RATE/TB[bg];"
-        f"color=c=white:s={CENTER_W}x{CENTER_H}:r={fps}[white];"
-        "[white][2:v]alphamerge[title];"
-        f"[bg][title]overlay=0:{CENTER_Y}:format=yuv420[withtitle];"
+        f"[bg][2:v]overlay=0:{CENTER_Y}:format=yuv420[withtitle];"
         f"[withtitle][1:v]overlay={PANEL_X}:0:format=yuv420"
         + scale_out
         # Throttle output to wall-clock speed so live destinations stay fed
@@ -156,7 +172,7 @@ def build_ffmpeg_command(
         "-f",
         "rawvideo",
         "-pix_fmt",
-        "rgba",
+        "yuva420p",
         "-video_size",
         f"{PANEL_W}x{CANVAS_H}",
         "-framerate",
@@ -168,7 +184,7 @@ def build_ffmpeg_command(
         "-f",
         "rawvideo",
         "-pix_fmt",
-        "gray",
+        "yuva420p",
         "-video_size",
         f"{CENTER_W}x{CENTER_H}",
         "-framerate",
@@ -192,7 +208,7 @@ def build_ffmpeg_command(
         "-map",
         "[aout]",
         "-shortest",
-        *_encoder_args(stream_url, output_format, settings),
+        *_encoder_args(stream_url, output_format, settings, intermediate=is_local_rtmp(stream_url)),
         *(["-t", f"{duration:g}"] if duration else []),
         "-f",
         output_format,
@@ -222,16 +238,24 @@ def build_offline_clip_command(background: Path, output: Path, fps: float, secon
     ]
 
 
-def build_relay_reader_command(source_url: str, timeout: float) -> List[str]:
-    """First half of a relay: a source path as FLV on stdout, audio brought to the live path's format."""
+def build_relay_reader_command(source_url: str, timeout: float, copy_audio: bool = False) -> List[str]:
+    """First half of a relay: a source path as FLV on stdout, audio brought to the live path's format.
+
+    `copy_audio`: the source already sends AAC at the live path's rate and
+    layout (the radio does), so skip the re-encode.
+    """
+    if copy_audio:
+        audio = ["-c:a", "copy"]
+    else:
+        # OBS may send 44.1 kHz or mono; the live path would refuse that.
+        audio = ["-c:a", "aac", "-b:a", "320k", "-ar", str(SWITCH_AUDIO_RATE), "-ac", str(SWITCH_AUDIO_CHANNELS)]
     return [
         "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "warning",
         "-rw_timeout", str(int(timeout * 1_000_000)),
         "-i", source_url,
         "-map", "0:v:0", "-map", "0:a:0",
         "-c:v", "copy",
-        # OBS may send 44.1 kHz or mono; the live path would refuse that.
-        "-c:a", "aac", "-b:a", "320k", "-ar", str(SWITCH_AUDIO_RATE), "-ac", str(SWITCH_AUDIO_CHANNELS),
+        *audio,
         "-flush_packets", "1",
         "-flvflags", "no_duration_filesize",  # a pipe cannot be rewound to fix up the header
         "-f", "flv", "pipe:1",

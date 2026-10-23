@@ -138,7 +138,9 @@ class Relay:
         self.source = source
         self.started = time.monotonic()
         self.reader = subprocess.Popen(
-            build_relay_reader_command(RTMP_URL + source, timeout), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE
+            build_relay_reader_command(RTMP_URL + source, timeout, copy_audio=source == RADIO_PATH),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
         )
         self.process = subprocess.Popen(build_relay_publisher_command(RTSP_URL + LIVE_PATH), stdin=subprocess.PIPE)
         threading.Thread(target=self._pump, name=f"relay-{source}", daemon=True).start()
