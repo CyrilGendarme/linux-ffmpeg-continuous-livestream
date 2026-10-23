@@ -75,6 +75,15 @@ OPTIONS: List[Option] = [
            minimum=-40, maximum=-5),
     Option("loudness_max_gain", float, 9.0, "Audio", "Max boost (dB)", "Never boost a quiet track more than this.",
            minimum=0, maximum=30),
+    # -- Switcher -------------------------------------------------------------
+    Option("output_url", str, None, "Switcher", "Final destination URL", "Where the source switcher sends the selected "
+           "source (OBS when it streams, otherwise the radio), e.g. rtmp://live.restream.io/live/KEY. With the switcher, "
+           "the radio's destination URL is the local MediaMTX radio path: rtmp://127.0.0.1:1935/radio.",
+           nullable=True, secret=True),
+    Option("takeover_delay", float, 1.0, "Switcher", "OBS takeover delay (s)",
+           "OBS must stream steadily this long before it replaces the radio.", minimum=0, maximum=30),
+    Option("release_timeout", float, 3.0, "Switcher", "OBS loss timeout (s)",
+           "Go back to the radio when OBS sends nothing for this long.", minimum=1, maximum=60),
     # -- Stability ------------------------------------------------------------
     Option("stall_timeout", float, 15.0, "Stability", "Stall timeout (s)", "Restart the encoder if no frame goes out for this long.",
            minimum=3, maximum=300),
@@ -130,7 +139,7 @@ def _validate_value(option: Option, value: Any, check_paths: bool) -> Tuple[Any,
         match = _SIZE.match(value)
         if not match or int(match.group(1)) % 2 or int(match.group(2)) % 2 or not 16 <= int(match.group(1)) <= 7680:
             return None, "must look like 1920x1080 (even numbers)"
-    if option.name == "rtmp_url" and not re.match(r"^(rtmps?|udp|tcp|srt)://\S+$", value):
+    if option.name in ("rtmp_url", "output_url") and not re.match(r"^(rtmps?|udp|tcp|srt)://\S+$", value):
         return None, "must start with rtmp://, rtmps://, udp://, tcp:// or srt://"
     if check_paths and option.path:
         path = Path(value).expanduser()

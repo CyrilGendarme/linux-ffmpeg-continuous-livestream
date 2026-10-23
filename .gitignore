@@ -9,3 +9,5 @@ __pycache__/
 config.json
 .certs/*
 db.sqlite3
+mediamtx/offline.mp4*
+mediamtx/*.partial.mp4

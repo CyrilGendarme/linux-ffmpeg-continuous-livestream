@@ -2,47 +2,6 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Music: Local random playback",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "livestream.local_playback",
-      "cwd": "${workspaceFolder}",
-      "console": "integratedTerminal",
-      "args": [
-        "--config",
-        "${workspaceFolder}/config.json"
-      ],
-      "justMyCode": true
-    },
-    {
-      "name": "Music: VPS non-audible self-test",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "livestream.self_test",
-      "cwd": "${workspaceFolder}",
-      "console": "integratedTerminal",
-      "args": [
-        "--config",
-        "${workspaceFolder}/config.json"
-      ],
-      "justMyCode": true
-    },
-    {
-      "name": "Music: VPS self-test (skip RTMP)",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "livestream.self_test",
-      "cwd": "${workspaceFolder}",
-      "console": "integratedTerminal",
-      "args": [
-        "--config",
-        "${workspaceFolder}/config.json",
-        "--rtmp-url",
-        ""
-      ],
-      "justMyCode": true
-    },
-    {
       "name": "Music: Local preview stream sender",
       "type": "debugpy",
       "request": "launch",
@@ -73,7 +32,8 @@
       "justMyCode": true
     },
     {
-      "name": "Music: Full stream stack",
+      // The "direct" profile of config.json sends the radio straight to the destination (no MediaMTX).
+      "name": "Music: Stream direct to destination",
       "type": "debugpy",
       "request": "launch",
       "module": "livestream.runner",
@@ -81,7 +41,9 @@
       "console": "integratedTerminal",
       "args": [
         "--config",
-        "${workspaceFolder}/config.json"
+        "${workspaceFolder}/config.json",
+        "--profile",
+        "direct"
       ],
       "justMyCode": true
     },
@@ -100,7 +62,7 @@
       "justMyCode": true
     },
     {
-      "name": "Music: Full stream stack (Mixcloud profile)",
+      "name": "Music: Radio to MediaMTX",
       "type": "debugpy",
       "request": "launch",
       "module": "livestream.runner",
@@ -109,131 +71,70 @@
       "args": [
         "--config",
         "${workspaceFolder}/config.json",
-        "--profile",
-        "mixcloud"
+        "--rtmp-url",
+        "rtmp://127.0.0.1:1935/radio"
       ],
       "justMyCode": true
     },
     {
-      "name": "Service: install",
+      // Sends OBS (path /laptop) when it streams, otherwise the radio, to output_url.
+      "name": "Switcher: OBS or radio to destination",
       "type": "debugpy",
       "request": "launch",
-      "module": "livestream.service",
+      "module": "livestream.switcher",
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "args": [
-        "install",
         "--config",
         "${workspaceFolder}/config.json"
       ],
+      "postDebugTask": "MediaMTX: stop",
       "justMyCode": true
     },
     {
-      "name": "Service: start",
+      // What the switcher sends, read back from MediaMTX over RTMP. (ffplay reads MediaMTX's
+      // low-latency HLS in 2 s bursts, which looks like constant freezing.)
+      "name": "Preview: switcher output",
       "type": "debugpy",
       "request": "launch",
-      "module": "livestream.service",
+      "module": "livestream.local_viewer",
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "args": [
-        "start"
-      ],
-      "justMyCode": true
-    },
-    {
-      "name": "Service: stop",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "livestream.service",
-      "cwd": "${workspaceFolder}",
-      "console": "integratedTerminal",
-      "args": [
-        "stop"
-      ],
-      "justMyCode": true
-    },
-    {
-      "name": "Service: restart",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "livestream.service",
-      "cwd": "${workspaceFolder}",
-      "console": "integratedTerminal",
-      "args": [
-        "restart"
-      ],
-      "justMyCode": true
-    },
-    {
-      "name": "Service: status",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "livestream.service",
-      "cwd": "${workspaceFolder}",
-      "console": "integratedTerminal",
-      "args": [
-        "status"
-      ],
-      "justMyCode": true
-    },
-    {
-      "name": "Service: logs",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "livestream.service",
-      "cwd": "${workspaceFolder}",
-      "console": "integratedTerminal",
-      "args": [
-        "logs"
-      ],
-      "justMyCode": true
-    },
-    {
-      "name": "Service: uninstall",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "livestream.service",
-      "cwd": "${workspaceFolder}",
-      "console": "integratedTerminal",
-      "args": [
-        "uninstall"
+        "--url",
+        "rtmp://127.0.0.1:1935/live"
       ],
       "justMyCode": true
     }
   ],
   "compounds": [
     {
-      "name": "Tier 0: VPS self-test",
-      "configurations": [
-        "Music: VPS non-audible self-test"
-      ]
-    },
-    {
-      "name": "Tier 1: Local random playback",
-      "configurations": [
-        "Music: Local random playback"
-      ]
-    },
-    {
-      "name": "Tier 1.5: Validate + local playback",
-      "configurations": [
-        "Music: VPS non-audible self-test",
-        "Music: Local random playback"
-      ]
-    },
-    {
       "name": "Tier 2: Local preview stream + viewer",
       "configurations": [
         "Music: Local preview stream sender",
         "Music: Local preview viewer"
-      ]
+      ],
+      "stopAll": true
     },
     {
-      "name": "Tier 3: Full stream + backend API",
+      "name": "Tier 3: Stream + backend API",
       "configurations": [
-        "Music: Full stream stack",
+        "Music: Stream direct to destination",
         "Backend: Control API"
-      ]
+      ],
+      "stopAll": true
+    },
+    {
+      // MediaMTX runs as a task (terminal panel) and is stopped with the switcher.
+      // Point OBS at rtmp://127.0.0.1:1935 with the stream key laptop?user=laptop_streamer&pass=...
+      "name": "Tier 4: Stream with MediaMTX OBS switch",
+      "preLaunchTask": "MediaMTX: start",
+      "configurations": [
+        "Music: Radio to MediaMTX",
+        "Switcher: OBS or radio to destination",
+        "Preview: switcher output"
+      ],
+      "stopAll": true
     }
   ]
 }

@@ -32,6 +32,11 @@ authInternalUsers:
     path: laptop
   - action: read
     path: radio
+  # Source switcher (livestream.switcher): relays a source onto live and reads it back.
+  - action: publish
+    path: live
+  - action: read
+    path: live
 - user: laptop_streamer
   pass: LAPTOP_SECRET_GRATUIT_CHAISE_TEU_WHAT
   ips: []
@@ -274,4 +279,10 @@ pathDefaults:
 paths:
   radio: null
   laptop: null
+  # What goes to the final destination. Readers stay connected while the
+  # switcher swaps the publisher, and get offline.mp4 (built by the switcher,
+  # path relative to this folder) while nothing is published.
+  live:
+    alwaysAvailable: true
+    alwaysAvailableFile: offline.mp4
   all_others: null

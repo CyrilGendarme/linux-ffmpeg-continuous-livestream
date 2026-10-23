@@ -1,0 +1,43 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      // Builds the offline clip if needed, then runs MediaMTX until "MediaMTX: stop".
+      // Ready once its RTMP listener is up.
+      "label": "MediaMTX: start",
+      "type": "shell",
+      "command": "\"${command:python.interpreterPath}\" -m livestream.switcher --config \"${workspaceFolder}/config.json\" --prepare-offline-clip && cd mediamtx && exec ./mediamtx mediamtx.yml",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "mediamtx",
+        "pattern": {
+          "regexp": "^(ERR): (.*)$",
+          "severity": 1,
+          "message": 2
+        },
+        "background": {
+          "activeBegin": true,
+          "beginsPattern": "INF MediaMTX v\\d",
+          "endsPattern": "\\[RTMP\\] started with listener"
+        }
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    },
+    {
+      // Note: also stops a MediaMTX started by the systemd service on this machine.
+      "label": "MediaMTX: stop",
+      "type": "shell",
+      "command": "pkill -x mediamtx || true",
+      "presentation": {
+        "reveal": "never"
+      },
+      "problemMatcher": []
+    }
+  ]
+}

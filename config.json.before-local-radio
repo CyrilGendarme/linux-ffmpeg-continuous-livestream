@@ -1,7 +1,7 @@
 {
   "music_dir": "/home/rdpuser/Music/33 rpm/",
   "background_video": "submodules/obscustomsetup/assets/stream loop 1.mp4",
-  "rtmp_url": "rtmp://live.restream.io/live/re_11962011_event4e71a09d72fe43be80ca9d09bbcb856a",
+  "rtmp_url": "rtmp://live.restream.io/live/re_11962011_event92dd62ab359847dfbd8589a7b3675328",
   "restart_delay": 2.0,
   "track_fade_seconds": 3.0,
   "video_bitrate": "4500k",
@@ -21,7 +21,7 @@
   "profile": "restream",
   "profiles": {
     "restream": {
-      "rtmp_url": "rtmp://live.restream.io/live/re_11962011_event4e71a09d72fe43be80ca9d09bbcb856a",
+      "rtmp_url": "rtmp://live.restream.io/live/re_11962011_event92dd62ab359847dfbd8589a7b3675328",
       "video_size": "1920x1080",
       "video_bitrate": "4500k",
       "audio_bitrate": "160k"

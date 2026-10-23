@@ -208,6 +208,16 @@ class ProgressWatchdog:
 STARTUP_GRACE_SECONDS = 30.0
 
 
+def exit_hint(returncode: Optional[int], watchdog: ProgressWatchdog) -> str:
+    """Likely cause of an encoder exit, for the log ('' when there is nothing useful to add)."""
+    if returncode == -signal.SIGSEGV and not watchdog.started:
+        # FFmpeg 6.1 segfaults when an RTMP server closes the connection after
+        # the publish command, which is how Restream & co refuse a stream key.
+        return (" (crashed before the first frame: the destination most likely refused the connection; "
+                "check the stream key and that nothing else is publishing with it)")
+    return ""
+
+
 def run_cycle(feeder: AudioFeeder, overlay: OverlayFeed, background: Path, argv) -> bool:
     """Run one encoder process. Returns True when every track has been played."""
     announce("Starting FFmpeg stream")
@@ -263,7 +273,7 @@ def run_cycle(feeder: AudioFeeder, overlay: OverlayFeed, background: Path, argv)
                 continue
             fields = overlay.track_started(track)  # metadata/cover usually prefetched already
             announce(f"Now playing: {fields['center']}")
-        raise RuntimeError(f"FFmpeg exited with code {process.returncode}")
+        raise RuntimeError(f"FFmpeg exited with code {process.returncode}{exit_hint(process.returncode, watchdog)}")
     finally:
         stop.set()
         if process.poll() is None:

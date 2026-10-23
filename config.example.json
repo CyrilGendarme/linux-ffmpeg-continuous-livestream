@@ -1,16 +1,20 @@
 {
-  "music_dir": "/srv/music",
-  "background_video": "/srv/video/background.mp4",
-  "rtmp_url": "rtmp://live.restream.io/live/YOUR_RESTREAM_KEY",
+  "music_dir": "/home/cgendarme/Music/",
+  "background_video": "submodules/obscustomsetup/assets/stream loop 1.mp4",
+  "rtmp_url": "rtmp://127.0.0.1:1935/radio",
+  "output_url": "rtmp://live.restream.io/live/re_11962011_event92dd62ab359847dfbd8589a7b3675328",
+  "takeover_delay": 1.0,
+  "release_timeout": 3.0,
   "restart_delay": 2.0,
   "track_fade_seconds": 3.0,
-  "video_bitrate": "4500k",
-  "video_fps": 25,
+  "video_bitrate": "2000k",
+  "video_fps": 30,
   "video_size": "1920x1080",
-  "video_preset": "veryfast",
+  "video_preset": "superfast", 
+  // "ultrafast" < "superfast" < "veryfast" < ...
   "encoder_threads": 2,
   "rc_lookahead": 10,
-  "audio_bitrate": "160k",
+  "audio_bitrate": "320k",
   "keyframe_seconds": 2,
   "stall_timeout": 15,
   "network_timeout": 10,
@@ -18,17 +22,13 @@
   "loudness_target": -14,
   "loudness_max_gain": 9,
   "cache_dir": "~/.cache/music-livestream",
-  "profile": "restream",
   "profiles": {
-    "restream": {
-      "rtmp_url": "rtmp://live.restream.io/live/YOUR_RESTREAM_KEY",
-      "video_size": "1920x1080",
-      "video_bitrate": "4500k",
-      "audio_bitrate": "160k"
-    },
     "local_preview": {
       "rtmp_url": "udp://127.0.0.1:1234?pkt_size=1316",
       "output_format": "mpegts"
+    },
+    "direct": {
+      "rtmp_url": "rtmp://live.restream.io/live/re_11962011_event92dd62ab359847dfbd8589a7b3675328"
     }
   }
 }

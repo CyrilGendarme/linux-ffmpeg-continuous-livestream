@@ -10,6 +10,11 @@ The HTTPS settings page runs as a second service:
 
     python3 -m livestream.service install-control [--tls-cert FULLCHAIN --tls-key PRIVKEY] [--port 8443]
     python3 -m livestream.service control-status | control-logs | uninstall-control
+
+The OBS takeover (MediaMTX + livestream.switcher) runs as two more services:
+
+    python3 -m livestream.service install-switcher [--config config.json]
+    python3 -m livestream.service switcher-status | switcher-logs | uninstall-switcher
 """
 
 import argparse
@@ -28,6 +33,8 @@ UNIT_PATH = Path.home() / ".config" / "systemd" / "user" / f"{SERVICE_NAME}.serv
 CONTROL_SERVICE_NAME = "music-livestream-control"
 CONTROL_UNIT_PATH = UNIT_PATH.with_name(f"{CONTROL_SERVICE_NAME}.service")
 CONTROL_ENV_PATH = Path.home() / ".config" / "music-livestream" / "control.env"
+MEDIAMTX_SERVICE_NAME = "music-livestream-mediamtx"
+SWITCHER_SERVICE_NAME = "music-livestream-switcher"
 
 
 def systemctl(*args: str, check: bool = True) -> int:
@@ -41,7 +48,8 @@ def render_unit(config: Path, profile: str) -> str:
     return f"""[Unit]
 Description=Continuous music livestream (FFmpeg)
 Wants=network-online.target
-After=network-online.target
+# With the OBS takeover, the radio streams to the local MediaMTX.
+After=network-online.target {MEDIAMTX_SERVICE_NAME}.service
 
 [Service]
 Type=simple
@@ -154,6 +162,75 @@ def uninstall_control() -> None:
     print(f"Removed {CONTROL_SERVICE_NAME} (the secret in {CONTROL_ENV_PATH} was kept)")
 
 
+def _unit_path(name: str) -> Path:
+    return UNIT_PATH.with_name(f"{name}.service")
+
+
+def install_switcher(config: Path) -> None:
+    """MediaMTX (receives the radio and OBS) and the switcher (sends one of them to output_url)."""
+    if not config.exists():
+        sys.exit(f"Config not found: {config}")
+    python = f'{sys.executable} -u -m livestream.switcher --config "{config}"'
+    units = {
+        MEDIAMTX_SERVICE_NAME: f"""[Unit]
+Description=MediaMTX media server for the music livestream (radio + OBS ingest)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory={REPO_ROOT}
+# mediamtx.yml loops this clip on the live path when no source is relayed.
+ExecStartPre={python} --prepare-offline-clip
+# Paths in mediamtx.yml are relative to its folder.
+ExecStart=/bin/sh -c 'cd mediamtx && exec ./mediamtx mediamtx.yml'
+Restart=always
+RestartSec=5
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target
+""",
+        SWITCHER_SERVICE_NAME: f"""[Unit]
+Description=Music livestream source switcher (OBS takes over the radio)
+Requires={MEDIAMTX_SERVICE_NAME}.service
+After={MEDIAMTX_SERVICE_NAME}.service
+
+[Service]
+Type=simple
+WorkingDirectory={REPO_ROOT}
+ExecStart={python}
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target
+""",
+    }
+    for name, text in units.items():
+        path = _unit_path(name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    systemctl("daemon-reload")
+    for name in units:
+        systemctl("enable", name)
+    print(f"Installed and enabled {MEDIAMTX_SERVICE_NAME} and {SWITCHER_SERVICE_NAME}.")
+    print("Start them (the radio service too) with:\n"
+          f"    systemctl --user start {MEDIAMTX_SERVICE_NAME} {SWITCHER_SERVICE_NAME} {SERVICE_NAME}")
+    print("Open TCP port 1935 in the firewall for OBS (e.g. sudo ufw allow 1935/tcp).")
+
+
+def uninstall_switcher() -> None:
+    for name in (SWITCHER_SERVICE_NAME, MEDIAMTX_SERVICE_NAME):
+        systemctl("disable", "--now", name, check=False)
+        if _unit_path(name).exists():
+            _unit_path(name).unlink()
+    systemctl("daemon-reload")
+    print(f"Removed {SWITCHER_SERVICE_NAME} and {MEDIAMTX_SERVICE_NAME}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Manage the music livestream systemd user services.")
     parser.add_argument(
@@ -161,6 +238,7 @@ def main() -> int:
         choices=[
             "install", "uninstall", "start", "stop", "restart", "status", "logs",
             "install-control", "uninstall-control", "control-status", "control-logs",
+            "install-switcher", "uninstall-switcher", "switcher-status", "switcher-logs",
         ],
     )
     parser.add_argument("--config", default=str(REPO_ROOT / "config.json"), help="Config file used by the service")
@@ -181,12 +259,17 @@ def main() -> int:
         install_control(args.port, args.tls_cert, args.tls_key)
     elif args.action == "uninstall-control":
         uninstall_control()
-    elif args.action in ("status", "control-status"):
-        name = CONTROL_SERVICE_NAME if args.action == "control-status" else SERVICE_NAME
-        systemctl("status", "--no-pager", name, check=False)
-    elif args.action in ("logs", "control-logs"):
-        name = CONTROL_SERVICE_NAME if args.action == "control-logs" else SERVICE_NAME
-        subprocess.run(["journalctl", "--user", "-u", name, "-n", "100", "--no-pager"])
+    elif args.action == "install-switcher":
+        install_switcher(Path(args.config).resolve())
+    elif args.action == "uninstall-switcher":
+        uninstall_switcher()
+    elif args.action in ("status", "control-status", "switcher-status"):
+        names = {"control-status": [CONTROL_SERVICE_NAME], "switcher-status": [MEDIAMTX_SERVICE_NAME, SWITCHER_SERVICE_NAME]}
+        systemctl("status", "--no-pager", *names.get(args.action, [SERVICE_NAME]), check=False)
+    elif args.action in ("logs", "control-logs", "switcher-logs"):
+        names = {"control-logs": [CONTROL_SERVICE_NAME], "switcher-logs": [MEDIAMTX_SERVICE_NAME, SWITCHER_SERVICE_NAME]}
+        units = [part for name in names.get(args.action, [SERVICE_NAME]) for part in ("-u", name)]
+        subprocess.run(["journalctl", "--user", *units, "-n", "100", "--no-pager"])
     else:
         systemctl(args.action, SERVICE_NAME)
         systemctl("status", "--no-pager", "--lines=5", SERVICE_NAME, check=False)

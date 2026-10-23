@@ -49,8 +49,6 @@ def main() -> int:
             "warning",
             "-fflags",
             "nobuffer",
-            "-flags",
-            "low_delay",
             args.url,
         ],
         stdout=subprocess.PIPE,
