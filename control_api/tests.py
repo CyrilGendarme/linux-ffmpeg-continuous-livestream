@@ -200,3 +200,100 @@ class ConfigEditorTests(TestCase):
         saved = json.loads(self.config_path.read_text())
         self.assertEqual((saved["countdown_hour"], saved["countdown_minute"]), (2, 45))
         self.assertIn("TARGET_HOUR = 2;", self.schedule_path.read_text())
+
+
+from unittest import mock
+from urllib.parse import parse_qs, urlsplit
+
+from . import restream
+
+
+@override_settings(INSTANCE_API_KEY=STRONG_SECRET)
+class RestreamTests(TestCase):
+    def setUp(self):
+        reset_failures()
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.config_path = base / "config.json"
+        self.config_path.write_text(json.dumps({"restream_client_id": "cid", "restream_client_secret": "csecret"}))
+        self.state_path = base / "restream.json"
+        self.settings = override_settings(STREAM_CONFIG_PATH=self.config_path, RESTREAM_STATE_PATH=self.state_path,
+                                          RESTREAM_REDIRECT_URI="https://radio.example/restream/callback/")
+        self.settings.enable()
+        self.calls = []
+
+    def tearDown(self):
+        self.settings.disable()
+        self.tmp.cleanup()
+
+    def fake_restream(self, method, url, body=None, headers=None):
+        self.calls.append((method, url, body, headers))
+        if url == restream.TOKEN_URL:
+            fields = parse_qs(body.decode())
+            return {"access_token": f"access-{len(self.calls)}", "refresh_token": f"refresh-{len(self.calls)}",
+                    "expires_in": 3600, "refreshTokenExpiresIn": 31536000, "_fields": fields}
+        if url.endswith("/v2/user/channels"):
+            return {"channels": [{"id": 1, "displayName": "YouTube"}, {"id": 2, "displayName": "Custom RTMP"}]}
+        if "/channel-meta/2" in url:
+            raise restream.RestreamError("Restream refused the request (400): not supported")
+        return {}
+
+    def connect(self):
+        url = self.client.post("/api/restream/connect/", HTTP_X_INSTANCE_KEY=SECRET).json()["url"]
+        query = parse_qs(urlsplit(url).query)
+        self.assertEqual(query["client_id"], ["cid"])
+        self.assertEqual(query["redirect_uri"], ["https://radio.example/restream/callback/"])
+        with mock.patch.object(restream, "_request", side_effect=self.fake_restream):
+            return self.client.get("/restream/callback/", {"code": "the-code", "state": query["state"][0]})
+
+    def test_endpoints_require_the_secret(self):
+        self.assertEqual(self.client.get("/api/restream/").status_code, 401)
+        self.assertEqual(self.client.post("/api/restream/connect/").status_code, 401)
+
+    def test_connect_stores_tokens_privately(self):
+        response = self.connect()
+        self.assertEqual(response.status_code, 302)
+        method, url, body, headers = self.calls[0]
+        self.assertEqual(parse_qs(body.decode())["grant_type"], ["authorization_code"])
+        self.assertTrue(headers["Authorization"].startswith("Basic "))
+        self.assertEqual(os.stat(self.state_path).st_mode & 0o777, 0o600)
+        self.assertTrue(restream.is_connected())
+
+    def test_callback_rejects_unknown_state(self):
+        with mock.patch.object(restream, "_request", side_effect=self.fake_restream):
+            response = self.client.get("/restream/callback/", {"code": "x", "state": "forged"})
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.calls, [])
+
+    def test_set_title_on_every_channel_reports_failures(self):
+        self.connect()
+        with mock.patch.object(restream, "_request", side_effect=self.fake_restream):
+            response = self.client.post("/api/restream/", data=json.dumps({"title": "  Disco   night  "}),
+                                        content_type="application/json", HTTP_X_INSTANCE_KEY=SECRET)
+        body = response.json()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(body["title"], "Disco night")
+        self.assertEqual([(item["name"], item["ok"]) for item in body["results"]], [("YouTube", True), ("Custom RTMP", False)])
+        patch = [call for call in self.calls if call[0] == "PATCH"][0]
+        self.assertTrue(patch[1].endswith("/v2/user/channel-meta/1"))
+        self.assertEqual(json.loads(patch[2]), {"title": "Disco night"})
+        self.assertEqual(patch[3]["Authorization"], "Bearer access-1")
+        self.assertEqual(restream.last_title(), "Disco night")
+
+    def test_expired_access_token_is_refreshed_and_rotated(self):
+        self.connect()
+        state = json.loads(self.state_path.read_text())
+        state["expires_at"] = 0
+        self.state_path.write_text(json.dumps(state))
+        with mock.patch.object(restream, "_request", side_effect=self.fake_restream):
+            self.client.get("/api/restream/", HTTP_X_INSTANCE_KEY=SECRET)
+        refresh = self.calls[1]
+        self.assertEqual(parse_qs(refresh[2].decode())["grant_type"], ["refresh_token"])
+        self.assertEqual(parse_qs(refresh[2].decode())["refresh_token"], ["refresh-1"])
+        self.assertEqual(json.loads(self.state_path.read_text())["refresh_token"], "refresh-2")
+
+    def test_title_is_validated(self):
+        for title in ("", "   ", "x" * 141, 5):
+            response = self.client.post("/api/restream/", data=json.dumps({"title": title}),
+                                        content_type="application/json", HTTP_X_INSTANCE_KEY=SECRET)
+            self.assertEqual(response.status_code, 400, title)

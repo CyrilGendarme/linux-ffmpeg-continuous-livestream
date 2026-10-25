@@ -32,7 +32,7 @@
   label.block { display: block; font-weight: 600; margin-bottom: 6px; }
   .help { font-size: 13px; color: var(--muted); margin-top: 6px; }
   .err { font-size: 13px; color: var(--error); font-weight: 600; margin-top: 6px; }
-  input[type=password], input[type=time], select, textarea {
+  input[type=password], input[type=text], input[type=time], select, textarea {
     width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
     background: var(--surface-2); color: var(--text); font: inherit; min-width: 0;
   }
@@ -50,7 +50,10 @@
   .banner { padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; border: 1px solid currentColor; }
   .banner.error { color: var(--error); } .banner.ok { color: var(--ok); } .banner.warn { color: var(--warn); }
   .banner ul { margin: 6px 0 0; padding-left: 18px; }
-  .actions { display: flex; justify-content: flex-end; }
+  .actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+  .results { margin: 8px 0 0; padding-left: 18px; font-size: 13px; }
+  .results .failed { color: var(--error); }
+  code { font-size: 13px; overflow-wrap: anywhere; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -106,6 +109,30 @@
 
     <div class="actions"><button type="submit" class="primary" id="apply">Apply</button></div>
   </form>
+
+  <form id="title-form" class="card" hidden>
+    <h2>Stream title (Restream)</h2>
+    <div id="restream-setup" hidden>
+      <p class="note">Create an app at <a href="https://developers.restream.io/apps" target="_blank" rel="noopener">developers.restream.io/apps</a>
+        with the redirect URI <code id="redirect-uri"></code>, then enter its client ID and secret in
+        <a href="/config/">All stream settings</a> (Restream section).</p>
+    </div>
+    <div id="restream-connect" hidden>
+      <p class="note">Connect your Restream account once; the connection lasts a year.</p>
+      <div class="actions"><button type="button" class="primary" id="connect">Connect Restream</button></div>
+    </div>
+    <div id="restream-title" hidden>
+      <label class="block" for="title">Title on every Restream channel</label>
+      <input type="text" id="title" maxlength="140" spellcheck="true">
+      <div class="help" id="channels"></div>
+      <div class="err" data-error="title" hidden></div>
+      <ul class="results" id="title-results" hidden></ul>
+      <div class="actions" style="margin-top:12px">
+        <button type="button" id="disconnect">Disconnect</button>
+        <button type="submit" class="primary" id="set-title">Set title</button>
+      </div>
+    </div>
+  </form>
 </div>
 
 <script>
@@ -126,10 +153,10 @@
     box.hidden = false;
   }
 
-  async function call(method, body) {
+  async function call(method, body, url = "/api/show/") {
     const secret = $("#secret").value;
     if (!secret) { banner("error", "Enter the admin secret first."); $("#secret").focus(); return null; }
-    const response = await fetch("/api/show/", {
+    const response = await fetch(url, {
       method, cache: "no-store",
       headers: Object.assign({ "X-Instance-Key": secret }, body ? { "Content-Type": "application/json" } : {}),
       body: body ? JSON.stringify(body) : undefined,
@@ -166,6 +193,7 @@
       render(result.data.show, result.data.backgrounds || []);
       $("#show").hidden = false;
       $("#banner").hidden = true;
+      await loadRestream();
       button.textContent = "Reload";
     } catch (error) {
       banner("error", "Network error: " + error.message);
@@ -209,8 +237,75 @@
     }
   }
 
+  // ---- Restream stream title ----------------------------------------------
+  function renderRestream(status) {
+    $("#title-form").hidden = false;
+    $("#redirect-uri").textContent = status.redirect_uri;
+    $("#restream-setup").hidden = status.configured;
+    $("#restream-connect").hidden = !status.configured || status.connected;
+    $("#restream-title").hidden = !status.connected;
+    if (!$("#title").value) $("#title").value = status.last_title || "";
+    const names = (status.channels || []).map((channel) => channel.displayName || channel.id);
+    $("#channels").textContent = status.error ? status.error
+      : names.length ? "Channels: " + names.join(", ") : "No channel found on this Restream account.";
+  }
+
+  async function loadRestream() {
+    const result = await call("GET", null, "/api/restream/");
+    if (result && result.ok) renderRestream(result.data);
+  }
+
+  async function connect() {
+    const result = await call("POST", {}, "/api/restream/connect/");
+    if (!result) return;
+    if (!result.ok) { banner("error", result.data.detail || "Could not start (HTTP " + result.status + ")."); return; }
+    window.location.href = result.data.url;
+  }
+
+  async function disconnect() {
+    const result = await call("DELETE", null, "/api/restream/");
+    if (result && result.ok) { renderRestream(result.data); banner("ok", "Restream disconnected."); }
+  }
+
+  async function setTitle(event) {
+    event.preventDefault();
+    clearErrors();
+    const list = $("#title-results");
+    list.hidden = true;
+    const button = $("#set-title");
+    button.disabled = true;
+    try {
+      const result = await call("POST", { title: $("#title").value }, "/api/restream/");
+      if (!result) return;
+      if (!result.ok) {
+        const error = (result.data.errors || {}).title;
+        if (error) { $('[data-error="title"]').textContent = error; $('[data-error="title"]').hidden = false; }
+        banner("error", result.data.detail || "Failed (HTTP " + result.status + ").");
+        return;
+      }
+      $("#title").value = result.data.title;
+      list.replaceChildren(...result.data.results.map((item) => Object.assign(document.createElement("li"), {
+        className: item.ok ? "" : "failed",
+        textContent: item.name + (item.ok ? ": updated" : ": " + item.error),
+      })));
+      list.hidden = !result.data.results.length;
+      banner(result.data.ok ? "ok" : "warn", result.data.message);
+    } catch (error) {
+      banner("error", "Network error: " + error.message);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  if (window.location.hash === "#restream-connected") {
+    banner("ok", "Restream connected. Enter the secret and load to set the title.");
+    history.replaceState(null, "", window.location.pathname);
+  }
   $("#unlock-form").addEventListener("submit", load);
   $("#show").addEventListener("submit", apply);
+  $("#title-form").addEventListener("submit", setTitle);
+  $("#connect").addEventListener("click", connect);
+  $("#disconnect").addEventListener("click", disconnect);
 })();
 </script>
 </body>

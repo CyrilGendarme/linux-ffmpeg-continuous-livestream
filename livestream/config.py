@@ -99,6 +99,13 @@ OPTIONS: List[Option] = [
     Option("network_timeout", float, 10.0, "Stability", "Network timeout (s)", "RTMP read/write timeout.", minimum=1, maximum=300),
     Option("cache_dir", str, str(DEFAULT_CACHE_DIR), "Stability", "Cache folder", "Loudness cache and pre-rendered assets.",
            profile_override=False),
+    # -- Restream (stream title; used by the web app only) --------------------
+    Option("restream_client_id", str, None, "Restream", "Restream app client ID",
+           "From your app at developers.restream.io/apps, to change the stream title from the show page.",
+           nullable=True, profile_override=False),
+    Option("restream_client_secret", str, None, "Restream", "Restream app client secret",
+           "Client secret of the same app. Its redirect URI must be https://<this server>/restream/callback/.",
+           nullable=True, secret=True, profile_override=False),
     # -- Overlay (applied by the running stream without a restart) -------------
     Option("menu_text", str, DEFAULT_MENU_TEXT, "Overlay", "Today's menu",
            f"Lines under \"Today's menu\" (at most {MENU_MAX_LINES} lines).", profile_override=False, multiline=True),

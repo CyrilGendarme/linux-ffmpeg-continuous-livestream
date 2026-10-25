@@ -21,6 +21,10 @@ BACKGROUND_VIDEO_DIRS = [
     ).split(os.pathsep)
     if folder
 ]
+# Restream OAuth tokens (see control_api/restream.py), and the redirect URI
+# registered in the Restream app (default: https://<host of the page>/restream/callback/).
+RESTREAM_STATE_PATH = Path(os.environ.get("RESTREAM_STATE_PATH", str(BASE_DIR / ".certs" / "restream.json")))
+RESTREAM_REDIRECT_URI = os.environ.get("RESTREAM_REDIRECT_URI", "")
 # The OBS overlays' countdown target, kept in sync with countdown_hour/countdown_minute.
 STARTING_SOON_SCHEDULE_PATH = Path(
     os.environ.get(
