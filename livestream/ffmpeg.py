@@ -2,7 +2,7 @@ from pathlib import Path
 from typing import List, Optional
 from urllib.parse import urlsplit
 
-from .overlay import CANVAS_H, CENTER_H, CENTER_W, CENTER_Y, PANEL_W, PANEL_X
+from .overlay import CANVAS_H, CENTER_H, CENTER_W, CENTER_Y, COUNTDOWN_H, COUNTDOWN_W, COUNTDOWN_Y, PANEL_W, PANEL_X
 
 
 # Raw PCM format exchanged between track decoders, the Python mixer and the encoder.
@@ -15,10 +15,12 @@ PCM_CHANNELS = 2
 # (FFmpeg logs "Thread message queue blocking" once per input; that is expected).
 # Larger queues let encoding ride out short stalls on the Python side
 # (GC, prerendering, disk) at the cost of overlay latency and memory:
-# 64 raw frames is ~2 s at 30 fps and ~155 MB across both overlay inputs;
+# 64 raw frames is ~2 s at 30 fps and ~170 MB across the three overlay inputs;
 # 256 PCM packets (1024 samples each) is ~5 s of audio.
 OVERLAY_QUEUE_SIZE = 64
 AUDIO_QUEUE_SIZE = 256
+# The background is 3 MB per raw frame: 16 frames is ~0.5 s at 30 fps and ~50 MB.
+BACKGROUND_QUEUE_SIZE = 16
 
 
 def build_decoder_command(track: Path, gain_db: float = 0.0) -> List[str]:
@@ -60,6 +62,21 @@ def build_background_command(source: Path, output: Path, fps: float, bitrate: st
         "-c:v", "libx264", "-preset", "medium", "-b:v", bitrate,
         "-movflags", "+faststart",
         str(output),
+    ]
+
+
+def build_background_decoder_command(background: Path) -> List[str]:
+    """Loop a prepared background (see build_background_command) forever as raw yuv420p frames on stdout.
+
+    The encoder reads them through a pipe, so the background can be switched
+    between two frames without restarting it (livestream.runner.BackgroundFeed).
+    """
+    return [
+        "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+        "-stream_loop", "-1", "-i", str(background),
+        "-map", "0:v:0",
+        "-f", "rawvideo", "-pix_fmt", "yuv420p",
+        "pipe:1",
     ]
 
 
@@ -119,9 +136,10 @@ def _encoder_args(stream_url: str, output_format: str, settings, intermediate: b
 
 
 def build_ffmpeg_command(
-    background_video: Path,
+    background_fd: int,
     panel_fd: int,
     title_fd: int,
+    countdown_fd: int,
     stream_url: str,
     output_format: str,
     settings,
@@ -130,9 +148,10 @@ def build_ffmpeg_command(
 ) -> List[str]:
     """Long-running encoder.
 
-    Inputs: looped background video, the now-playing panel and the centre
-    title as raw yuva420p frames (pipes `panel_fd` and `title_fd`), and raw
-    PCM audio on stdin. Overlay frames come from livestream.overlay.
+    Inputs: the background as raw yuv420p frames (pipe `background_fd`, from
+    livestream.runner.BackgroundFeed), the now-playing panel, the centre title
+    and the countdown as raw yuva420p frames (pipes `panel_fd`, `title_fd` and
+    `countdown_fd`, from livestream.overlay), and raw PCM audio on stdin.
 
     `settings` provides video_bitrate, video_bufsize, video_fps, video_size,
     video_preset, encoder_threads, rc_lookahead, audio_bitrate,
@@ -141,17 +160,17 @@ def build_ffmpeg_command(
     fps = f"{settings.video_fps:g}"
     scale_out = "" if settings.video_size == LAYOUT_SIZE else f",scale={settings.video_size.replace('x', ':')}"
     video = (
-        # Renumber frames so the looped background has monotonic timestamps.
-        "[0:v]setpts=N/FRAME_RATE/TB[bg];"
+        "[0:v]null[bg];"
         f"[bg][2:v]overlay=0:{CENTER_Y}:format=yuv420[withtitle];"
-        f"[withtitle][1:v]overlay={PANEL_X}:0:format=yuv420"
+        f"[withtitle][1:v]overlay={PANEL_X}:0:format=yuv420[withpanel];"
+        f"[withpanel][3:v]overlay=0:{COUNTDOWN_Y}:format=yuv420"
         + scale_out
         # Throttle output to wall-clock speed so live destinations stay fed
         # steadily and the overlay animation stays in sync with what is heard.
         + (",realtime" if realtime else "")
         + "[vout]"
     )
-    audio = "[3:a]arealtime[aout]" if realtime else "[3:a]anull[aout]"
+    audio = "[4:a]arealtime[aout]" if realtime else "[4:a]anull[aout]"
 
     return [
         "ffmpeg",
@@ -163,10 +182,18 @@ def build_ffmpeg_command(
         "pipe:1",
         "-stats_period",
         "1",
-        "-stream_loop",
-        "-1",
+        "-thread_queue_size",
+        str(BACKGROUND_QUEUE_SIZE),
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "yuv420p",
+        "-video_size",
+        LAYOUT_SIZE,
+        "-framerate",
+        fps,
         "-i",
-        str(background_video),
+        f"pipe:{background_fd}",
         "-thread_queue_size",
         str(OVERLAY_QUEUE_SIZE),
         "-f",
@@ -191,6 +218,18 @@ def build_ffmpeg_command(
         fps,
         "-i",
         f"pipe:{title_fd}",
+        "-thread_queue_size",
+        str(OVERLAY_QUEUE_SIZE),
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "yuva420p",
+        "-video_size",
+        f"{COUNTDOWN_W}x{COUNTDOWN_H}",
+        "-framerate",
+        fps,
+        "-i",
+        f"pipe:{countdown_fd}",
         "-thread_queue_size",
         str(AUDIO_QUEUE_SIZE),
         "-f",

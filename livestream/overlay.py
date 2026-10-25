@@ -2,6 +2,7 @@
 
   * submodules/obscustomsetup/now_playing.html   -> right-hand panel (RGBA, 256x1080)
   * submodules/obscustomsetup/typewriter_radio.html -> centre "decoding" title (alpha mask)
+  * submodules/obscustomsetup/countdown.html     -> bottom-left "starting soon" countdown (RGBA)
 
 Layout values come from the CSS (style.css, style_now_playing.css,
 style_typewriter.css) and were checked against Chromium rendering the real
@@ -18,6 +19,7 @@ import math
 import random
 import re
 import zlib
+from datetime import datetime, timedelta
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
@@ -34,6 +36,8 @@ PANEL_W = 256  # #now-playing-container-wrapper width
 PANEL_X = CANVAS_W - PANEL_W
 CENTER_W = CANVAS_W - PANEL_W  # .word-radio-wrapper: calc(100% - 256px)
 CENTER_Y, CENTER_H = 140, 800  # region sent to FFmpeg for the centre title (8 lines of 100px)
+COUNTDOWN_W, COUNTDOWN_H = 480, 200  # region sent to FFmpeg for the countdown, at the bottom-left corner
+COUNTDOWN_Y = CANVAS_H - COUNTDOWN_H
 
 WHITE = (255, 255, 255, 255)
 RED = (0xC3, 0x15, 0x30, 255)  # .red-text
@@ -116,6 +120,7 @@ def _font_path(name: str) -> str:
 PANEL_TITLE = TextStyle(_font_path("Staatliches-Regular.ttf"), 32, 4, 40)  # line-height normal = 1.25em
 INFO_TEXT = TextStyle(_font_path("DMSans.ttf"), 20, 2, 24, optical_size=20)  # line-height 1.2
 WORD = TextStyle(_font_path("Staatliches-Regular.ttf"), 80, 12, 100)
+COUNTDOWN_TEXT = TextStyle(_font_path("Staatliches-Regular.ttf"), 44, 1, 44)  # style_countdown.css, line-height 1
 
 
 def collapse_whitespace(text: str) -> str:
@@ -336,6 +341,7 @@ class NowPlayingPanel:
 
     def __init__(self, sched: Scheduler) -> None:
         self.sched = sched
+        self.menu: Tuple[str, ...] = ("45 to 33 rpm", "popuri music")  # lines under "Today's menu"
         self.fields = {key: Element("") for key in FIELD_ORDER}
         self.animation_queue = TaskQueue()
         self.cover_queue = TaskQueue()
@@ -428,7 +434,8 @@ class NowPlayingPanel:
 
         # Today's menu
         y = 24.0
-        y += block(y, [("Today's menu", WHITE)], ["45 to 33 rpm", "popuri music"]) + 12
+        menu_lines = [wrapped for line in self.menu for wrapped in wrap(INFO_TEXT, line, content_w)]
+        y += block(y, [("Today's menu", WHITE)], menu_lines) + 12
         # Like Share Follow Love
         y += 24
         y += block(y, [("Like ", WHITE), ("Share ", RED), ("Follow ", WHITE), ("Love", RED)], []) + 12
@@ -599,6 +606,44 @@ class TypewriterTitle:
         return mask
 
 
+class Countdown:
+    """countdown.html with startingSoonSchedule.js: time left until the next HH:MM (wall clock)."""
+
+    def __init__(self) -> None:
+        self.enabled = False
+        self.hour, self.minute = 19, 45
+
+    def text(self, now: Optional[datetime] = None) -> str:
+        """The remaining time as HH:MM:SS, or '' when hidden."""
+        if not self.enabled:
+            return ""
+        now = now or datetime.now()
+        target = now.replace(hour=self.hour, minute=self.minute, second=0, microsecond=0)
+        if target <= now:
+            target += timedelta(days=1)
+        seconds = int((target - now).total_seconds())
+        return f"{seconds // 3600:02d}:{seconds % 3600 // 60:02d}:{seconds % 60:02d}"
+
+    @staticmethod
+    def render(remaining: str) -> Image.Image:
+        """#countdown-overlay, COUNTDOWN_W x COUNTDOWN_H at the bottom-left of the canvas."""
+        image = Image.new("RGBA", (COUNTDOWN_W, COUNTDOWN_H), (0, 0, 0, 0))
+        if not remaining:
+            return image
+        draw = ImageDraw.Draw(image)
+        lines = [("Live DJ Set", WHITE), ("Starting Soon", WHITE), (remaining, RED)]
+        padding_x, padding_y, gap, edge = 18, 14, 8, 24
+        width = 2 * padding_x + max(_width(COUNTDOWN_TEXT, text) for text, _color in lines)
+        height = 2 * padding_y + len(lines) * COUNTDOWN_TEXT.line_height + (len(lines) - 1) * gap
+        top = COUNTDOWN_H - edge - height
+        draw.rectangle([edge, top, edge + math.ceil(width) - 1, top + height - 1], fill=BOX)
+        line_top = top + padding_y
+        for text, color in lines:
+            draw_line(draw, COUNTDOWN_TEXT, edge + padding_x, line_top, text, fill=color)
+            line_top += COUNTDOWN_TEXT.line_height + gap
+        return image
+
+
 # Overlays reach FFmpeg as raw yuva420p, ready to blend: converting them here,
 # once per change, is far cheaper than FFmpeg converting every frame.
 # BT.601 limited range, like FFmpeg's own RGB -> YUV conversion.
@@ -646,6 +691,7 @@ class OverlayRenderer:
         self.sched = Scheduler()
         self.panel = NowPlayingPanel(self.sched)
         self.title = TypewriterTitle(self.sched)
+        self.countdown = Countdown()
         self.cache: Dict[tuple, bytes] = {}
         self.cache_hits = 0
         self.live_renders = 0
@@ -653,6 +699,8 @@ class OverlayRenderer:
         self._panel_bytes = b""
         self._title_key = None
         self._title_bytes = b""
+        self._countdown_text: Optional[str] = None
+        self._countdown_bytes = b""
 
     def on_track(
         self,
@@ -677,6 +725,7 @@ class OverlayRenderer:
         """State of a settled renderer, enough to replay the next transition elsewhere."""
         return {
             "fields": {key: self.panel.fields[key].text for key in FIELD_ORDER},
+            "menu": self.panel.menu,
             "title": self.title.element.text,
             "cover_token": self.panel.cover_token,
             "cover": _image_payload(self.panel.cover_image),
@@ -689,6 +738,7 @@ class OverlayRenderer:
         renderer = cls(fps)
         for key in FIELD_ORDER:
             renderer.panel.fields[key].text = state["fields"][key]
+        renderer.panel.menu = state["menu"]
         renderer.title.element.text = state["title"]
         renderer.panel.cover_token = state["cover_token"]
         renderer.panel.cover_image = _image_from_payload(state["cover"])
@@ -703,6 +753,7 @@ class OverlayRenderer:
         return (
             "panel",
             tuple(self.panel.fields[key].text for key in FIELD_ORDER),
+            self.panel.menu,
             round(self.panel.cover_opacity(), 3),
             self.panel.cover_token,
             self.panel.cover_background,
@@ -728,8 +779,8 @@ class OverlayRenderer:
         self.live_renders += 1
         return self.render_key(key)
 
-    def next_frames(self) -> Tuple[bytes, bytes]:
-        """Advance one video frame; returns (panel, centre title) as raw yuva420p frames."""
+    def next_frames(self) -> Tuple[bytes, bytes, bytes]:
+        """Advance one video frame; returns (panel, centre title, countdown) as raw yuva420p frames."""
         self.advance()
         panel_key = self.panel_key()
         if panel_key != self._panel_key:
@@ -739,7 +790,12 @@ class OverlayRenderer:
         if title_key != self._title_key:
             self._title_key = title_key
             self._title_bytes = self._frame_bytes(title_key)
-        return self._panel_bytes, self._title_bytes
+        # Wall-clock driven, changes once a second: always rendered live.
+        countdown_text = self.countdown.text()
+        if countdown_text != self._countdown_text:
+            self._countdown_text = countdown_text
+            self._countdown_bytes = to_yuva420p(self.countdown.render(countdown_text))
+        return self._panel_bytes, self._title_bytes, self._countdown_bytes
 
 
 def _image_payload(image: Image.Image) -> tuple:

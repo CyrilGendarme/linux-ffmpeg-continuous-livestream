@@ -12,6 +12,22 @@ INSTANCE_API_KEY = os.environ.get("INSTANCE_API_KEY", "test-secret-key")
 # (relative paths in the config are resolved against it).
 STREAM_WORKDIR = BASE_DIR
 STREAM_CONFIG_PATH = Path(os.environ.get("STREAM_CONFIG_PATH", str(BASE_DIR / "config.json")))
+# Folders whose videos are offered as background loops (os.pathsep-separated),
+# besides the folder of the current background.
+BACKGROUND_VIDEO_DIRS = [
+    Path(folder).expanduser()
+    for folder in os.environ.get(
+        "BACKGROUND_VIDEO_DIRS", str(BASE_DIR / "submodules" / "obscustomsetup" / "assets")
+    ).split(os.pathsep)
+    if folder
+]
+# The OBS overlays' countdown target, kept in sync with countdown_hour/countdown_minute.
+STARTING_SOON_SCHEDULE_PATH = Path(
+    os.environ.get(
+        "STARTING_SOON_SCHEDULE_PATH",
+        str(BASE_DIR / "submodules" / "obscustomsetup" / "scripts" / "startingSoonSchedule.js"),
+    )
+)
 
 # Served over HTTPS only.
 SESSION_COOKIE_SECURE = True

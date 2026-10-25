@@ -1,0 +1,37 @@
+{
+  "music_dir": "/home/cgendarme/Music/",
+  "background_video": "submodules/obscustomsetup/assets/loop starting soon.mp4",
+  "rtmp_url": "rtmp://127.0.0.1:1935/radio",
+  "track_fade_seconds": 3.0,
+  "restart_delay": 2.0,
+  "video_bitrate": "2000k",
+  "video_fps": 30.0,
+  "video_size": "1920x1080",
+  "video_preset": "superfast",
+  "encoder_threads": 2,
+  "rc_lookahead": 10,
+  "keyframe_seconds": 2.0,
+  "audio_bitrate": "320k",
+  "loudness_normalize": true,
+  "loudness_target": -14.0,
+  "loudness_max_gain": 9.0,
+  "output_url": "rtmp://live.restream.io/live/re_11962011_event92dd62ab359847dfbd8589a7b3675328",
+  "takeover_delay": 1.0,
+  "release_timeout": 3.0,
+  "stall_timeout": 15.0,
+  "network_timeout": 10.0,
+  "cache_dir": "~/.cache/music-livestream",
+  "menu_text": "45 to 33 rpm test\npopuri testtest",
+  "countdown_enabled": true,
+  "countdown_hour": 19,
+  "countdown_minute": 45,
+  "profiles": {
+    "local_preview": {
+      "rtmp_url": "udp://127.0.0.1:1234?pkt_size=1316",
+      "output_format": "mpegts"
+    },
+    "direct": {
+      "rtmp_url": "rtmp://live.restream.io/live/re_11962011_event92dd62ab359847dfbd8589a7b3675328"
+    }
+  }
+}

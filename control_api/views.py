@@ -5,13 +5,13 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
 from .auth import check_secret
-
-TARGET_TIME = {"hours": 0, "minutes": 0}
+from .config_views import _read_config, show_state, update_show
 
 
 @csrf_exempt  # authenticated by a header secret, not by cookies
 @require_http_methods(["GET", "POST"])
 def target_time(request):
+    """The countdown's start time (config countdown_hour / countdown_minute)."""
     denied = check_secret(request)
     if denied is not None:
         return denied
@@ -33,10 +33,15 @@ def target_time(request):
         if not 0 <= hours <= 23 or not 0 <= minutes <= 59:
             return JsonResponse({"detail": "'hours' must be 0-23 and 'minutes' must be 0-59."}, status=400)
 
-        TARGET_TIME["hours"] = hours
-        TARGET_TIME["minutes"] = minutes
+        response = update_show({"countdown_hour": hours, "countdown_minute": minutes})
+        if response.status_code != 200:
+            return response
 
-    return JsonResponse({"hours": TARGET_TIME["hours"], "minutes": TARGET_TIME["minutes"]})
+    try:
+        show = show_state(_read_config())
+    except (OSError, ValueError) as exc:
+        return JsonResponse({"detail": f"Could not read the config: {exc}"}, status=500)
+    return JsonResponse({"hours": show["countdown_hour"], "minutes": show["countdown_minute"]})
 
 
 @csrf_exempt

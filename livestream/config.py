@@ -17,6 +17,14 @@ X264_PRESETS = ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium"
 _BITRATE = re.compile(r"^\d+(\.\d+)?[kKmM]?$")
 _SIZE = re.compile(r"^(\d+)x(\d+)$")
 _PROFILE_NAME = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
+DEFAULT_MENU_TEXT = "45 to 33 rpm\npopuri music"
+MENU_MAX_LINES = 4
+MENU_MAX_LENGTH = 200
+
+
+def menu_lines(text: str) -> List[str]:
+    """The non-empty lines of a menu text."""
+    return [line.strip() for line in str(text).splitlines() if line.strip()]
 
 
 @dataclass(frozen=True)
@@ -36,6 +44,7 @@ class Option:
     secret: bool = False  # contains credentials (e.g. a stream key)
     path: str = ""  # "dir" | "file": must exist on the server
     profile_override: bool = True  # may be overridden per profile
+    multiline: bool = False  # free text over several lines
 
 
 OPTIONS: List[Option] = [
@@ -90,8 +99,19 @@ OPTIONS: List[Option] = [
     Option("network_timeout", float, 10.0, "Stability", "Network timeout (s)", "RTMP read/write timeout.", minimum=1, maximum=300),
     Option("cache_dir", str, str(DEFAULT_CACHE_DIR), "Stability", "Cache folder", "Loudness cache and pre-rendered assets.",
            profile_override=False),
+    # -- Overlay (applied by the running stream without a restart) -------------
+    Option("menu_text", str, DEFAULT_MENU_TEXT, "Overlay", "Today's menu",
+           f"Lines under \"Today's menu\" (at most {MENU_MAX_LINES} lines).", profile_override=False, multiline=True),
+    Option("countdown_enabled", bool, False, "Overlay", "Show countdown",
+           "\"Live DJ Set / Starting Soon\" countdown in the bottom-left corner.", profile_override=False),
+    Option("countdown_hour", int, 19, "Overlay", "Countdown hour", "Start time of the show (server time), 0-23.",
+           minimum=0, maximum=23, profile_override=False),
+    Option("countdown_minute", int, 45, "Overlay", "Countdown minute", "Start time of the show, 0-59.",
+           minimum=0, maximum=59, profile_override=False),
 ]
 OPTIONS_BY_NAME: Dict[str, Option] = {option.name: option for option in OPTIONS}
+# Options the runner picks up from the config file while streaming.
+LIVE_OPTIONS = ("background_video", "menu_text", "countdown_enabled", "countdown_hour", "countdown_minute")
 
 
 def _to_bool(value) -> bool:
@@ -139,6 +159,13 @@ def _validate_value(option: Option, value: Any, check_paths: bool) -> Tuple[Any,
         match = _SIZE.match(value)
         if not match or int(match.group(1)) % 2 or int(match.group(2)) % 2 or not 16 <= int(match.group(1)) <= 7680:
             return None, "must look like 1920x1080 (even numbers)"
+    if option.name == "menu_text":
+        lines = menu_lines(value)
+        if len(lines) > MENU_MAX_LINES:
+            return None, f"must have at most {MENU_MAX_LINES} lines"
+        value = "\n".join(lines)
+        if len(value) > MENU_MAX_LENGTH:
+            return None, f"must be at most {MENU_MAX_LENGTH} characters"
     if option.name in ("rtmp_url", "output_url") and not re.match(r"^(rtmps?|udp|tcp|srt)://\S+$", value):
         return None, "must start with rtmp://, rtmps://, udp://, tcp:// or srt://"
     if check_paths and option.path:
@@ -234,12 +261,46 @@ def schema() -> List[dict]:
             "secret": option.secret,
             "path": option.path,
             "profile_override": option.profile_override,
+            "multiline": option.multiline,
         }
         for option in OPTIONS
     ]
 
 
 # ------------------------------------------------------------------ runner CLI
+
+
+def load_config_file(path: Path, profile: Optional[str] = None) -> Tuple[dict, Optional[str]]:
+    """Read a config file and apply a profile (`profile` or the file's own).
+
+    Returns (settings with the profile applied, profile name). Raises ValueError.
+    """
+    try:
+        with Path(path).open("r", encoding="utf-8") as handle:
+            config = json.load(handle)
+    except OSError as exc:
+        raise ValueError(f"Config file not readable: {path}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Config file is not valid JSON: {path}: {exc}") from exc
+    if not isinstance(config, dict):
+        raise ValueError(f"Config file must contain a JSON object: {path}")
+    profile = profile or config.get("profile")
+    if profile:
+        profiles = config.get("profiles") or {}
+        if profile not in profiles:
+            raise ValueError(f"Unknown profile {profile!r}. Available: {', '.join(profiles) or 'none'}")
+        config = {**config, **profiles[profile]}
+    return config, profile
+
+
+def option_value(option: Option, config: dict) -> Any:
+    """The value of `option` in a (profile-applied) config, or its default."""
+    value = config.get(option.name)
+    if value is None or value == "":
+        return option.default
+    if option.kind is bool:
+        return _to_bool(value)
+    return option.kind(value)
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -257,37 +318,22 @@ def parse_args(argv=None) -> argparse.Namespace:
     args = parser.parse_args(argv)
 
     config: Dict[str, Any] = {}
+    profile_name = args.profile
     if args.config:
         config_path = Path(args.config)
         if not config_path.exists():
             parser.error(f"Config file not found: {config_path}")
         try:
-            with config_path.open("r", encoding="utf-8") as handle:
-                config = json.load(handle)
-        except json.JSONDecodeError as exc:
-            parser.error(f"Config file is not valid JSON: {config_path}: {exc}")
-        if not isinstance(config, dict):
-            parser.error(f"Config file must contain a JSON object: {config_path}")
-
-    profile_name = args.profile or config.get("profile")
-    if profile_name:
-        profiles = config.get("profiles") or {}
-        if profile_name not in profiles:
-            parser.error(f"Unknown profile {profile_name!r}. Available: {', '.join(profiles) or 'none'}")
-        config = {**config, **profiles[profile_name]}
+            config, profile_name = load_config_file(config_path, args.profile)
+        except ValueError as exc:
+            parser.error(str(exc))
     args.profile = profile_name
 
+    # Set on the command line: the config file never overrides these, not even while streaming.
+    args.cli_options = {option.name for option in OPTIONS if getattr(args, option.name) is not None}
     for option in OPTIONS:
-        if getattr(args, option.name) is not None:
-            continue
-        value = config.get(option.name)
-        if value is None or value == "":
-            value = option.default
-        elif option.kind is bool:
-            value = _to_bool(value)
-        else:
-            value = option.kind(value)
-        setattr(args, option.name, value)
+        if option.name not in args.cli_options:
+            setattr(args, option.name, option_value(option, config))
 
     missing = [
         "--" + option.name.replace("_", "-")

@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Show Controls</title>
+<style>
+  :root {
+    --bg: #f4f4f2; --surface: #ffffff; --surface-2: #f8f8f6; --text: #1b1b1b; --muted: #66665f;
+    --border: #deddd6; --accent: #c31530; --accent-text: #ffffff; --ok: #1f7a3a; --warn: #9a6400;
+    --error: #b3261e; --focus: #c3153055; --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111111; --surface: #1a1a1a; --surface-2: #202020; --text: #ededea; --muted: #a3a39b;
+      --border: #2e2e2b; --accent: #e0334d; --accent-text: #ffffff; --ok: #5cc27a; --warn: #e2a83d;
+      --error: #ff7a70; --focus: #e0334d66;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .wrap { max-width: 640px; margin: 0 auto; padding: 24px 16px 48px; }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+  header a { color: var(--accent); font-size: 14px; }
+  h1 { font-size: 22px; margin: 0; letter-spacing: .5px; }
+  h2 { font-size: 15px; margin: 0 0 12px; text-transform: uppercase; letter-spacing: 1.5px; color: var(--muted); }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; margin-bottom: 16px; }
+  .unlock { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .unlock input { flex: 1 1 240px; }
+  label.block { display: block; font-weight: 600; margin-bottom: 6px; }
+  .help { font-size: 13px; color: var(--muted); margin-top: 6px; }
+  .err { font-size: 13px; color: var(--error); font-weight: 600; margin-top: 6px; }
+  input[type=password], input[type=time], select, textarea {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--surface-2); color: var(--text); font: inherit; min-width: 0;
+  }
+  textarea { resize: vertical; }
+  input:focus, select:focus, textarea:focus, button:focus-visible { outline: 3px solid var(--focus); outline-offset: 1px; }
+  .row { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+  .row input[type=time] { width: auto; }
+  .switch { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; }
+  .switch input { width: 18px; height: 18px; accent-color: var(--accent); }
+  button { font: inherit; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-2);
+           color: var(--text); padding: 8px 14px; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .note { font-size: 13px; color: var(--muted); margin: 8px 0 0; }
+  .banner { padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; border: 1px solid currentColor; }
+  .banner.error { color: var(--error); } .banner.ok { color: var(--ok); } .banner.warn { color: var(--warn); }
+  .banner ul { margin: 6px 0 0; padding-left: 18px; }
+  .actions { display: flex; justify-content: flex-end; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Show controls</h1>
+    <a href="/config/">All stream settings</a>
+  </header>
+
+  {% if server_problem %}
+  <div class="banner error">{{ server_problem }}</div>
+  {% endif %}
+  <div id="banner" class="banner" hidden></div>
+
+  <section class="card">
+    <h2>Admin secret</h2>
+    <form class="unlock" id="unlock-form" autocomplete="off">
+      <input type="password" id="secret" placeholder="Secret (INSTANCE_API_KEY)" aria-label="Admin secret" autocomplete="current-password">
+      <button type="submit" class="primary" id="load">Load</button>
+    </form>
+    <p class="note">Changes go on air within a second, without restarting the stream. The secret is never stored in the browser.</p>
+  </section>
+
+  <form id="show" hidden>
+    <section class="card">
+      <h2>Background loop</h2>
+      <label class="block" for="background_video">Video</label>
+      <select id="background_video"></select>
+      <div class="help">A new loop is prepared once (this can take a minute), then swapped in seamlessly; the stream never stops.</div>
+      <div class="err" data-error="background_video" hidden></div>
+    </section>
+
+    <section class="card">
+      <h2>Today's menu</h2>
+      <label class="block" for="menu_text">Lines under "Today's menu"</label>
+      <textarea id="menu_text" rows="4" spellcheck="false"></textarea>
+      <div class="help">One line per row, at most 4.</div>
+      <div class="err" data-error="menu_text" hidden></div>
+    </section>
+
+    <section class="card">
+      <h2>Countdown</h2>
+      <div class="row">
+        <label class="switch"><input type="checkbox" id="countdown_enabled"> Show countdown</label>
+        <label class="switch" for="countdown_time">Starts at <input type="time" id="countdown_time" required></label>
+      </div>
+      <div class="help">"Live DJ Set / Starting Soon" with the time left, bottom left. The time is the server's clock.</div>
+      <div class="err" data-error="countdown_enabled" hidden></div>
+      <div class="err" data-error="countdown_hour" hidden></div>
+      <div class="err" data-error="countdown_minute" hidden></div>
+    </section>
+
+    <div class="actions"><button type="submit" class="primary" id="apply">Apply</button></div>
+  </form>
+</div>
+
+<script>
+(() => {
+  "use strict";
+  const $ = (selector) => document.querySelector(selector);
+  const pad = (value) => String(value).padStart(2, "0");
+
+  function banner(kind, message, items) {
+    const box = $("#banner");
+    box.className = "banner " + kind;
+    box.replaceChildren(Object.assign(document.createElement("div"), { textContent: message }));
+    if (items && items.length) {
+      const list = document.createElement("ul");
+      for (const item of items) list.append(Object.assign(document.createElement("li"), { textContent: item }));
+      box.append(list);
+    }
+    box.hidden = false;
+  }
+
+  async function call(method, body) {
+    const secret = $("#secret").value;
+    if (!secret) { banner("error", "Enter the admin secret first."); $("#secret").focus(); return null; }
+    const response = await fetch("/api/show/", {
+      method, cache: "no-store",
+      headers: Object.assign({ "X-Instance-Key": secret }, body ? { "Content-Type": "application/json" } : {}),
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    let data = {};
+    try { data = await response.json(); } catch (error) { /* non-JSON error page */ }
+    return { ok: response.ok, status: response.status, data };
+  }
+
+  function render(show, backgrounds) {
+    const select = $("#background_video");
+    const choices = backgrounds.slice();
+    if (show.background_video && !choices.includes(show.background_video)) choices.push(show.background_video);
+    select.replaceChildren(...choices.map((path) =>
+      Object.assign(document.createElement("option"), { value: path, textContent: path.split("/").pop() })));
+    select.value = show.background_video || "";
+    $("#menu_text").value = show.menu_text || "";
+    $("#countdown_enabled").checked = Boolean(show.countdown_enabled);
+    $("#countdown_time").value = pad(show.countdown_hour) + ":" + pad(show.countdown_minute);
+  }
+
+  function clearErrors() {
+    for (const node of document.querySelectorAll(".err")) { node.hidden = true; node.textContent = ""; }
+  }
+
+  async function load(event) {
+    event.preventDefault();
+    const button = $("#load");
+    button.disabled = true;
+    try {
+      const result = await call("GET");
+      if (!result) return;
+      if (!result.ok) { banner("error", result.data.detail || "Could not load (HTTP " + result.status + ")."); return; }
+      render(result.data.show, result.data.backgrounds || []);
+      $("#show").hidden = false;
+      $("#banner").hidden = true;
+      button.textContent = "Reload";
+    } catch (error) {
+      banner("error", "Network error: " + error.message);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  async function apply(event) {
+    event.preventDefault();
+    clearErrors();
+    const [hour, minute] = $("#countdown_time").value.split(":").map((part) => Number.parseInt(part, 10));
+    const button = $("#apply");
+    button.disabled = true;
+    try {
+      const result = await call("POST", {
+        background_video: $("#background_video").value,
+        menu_text: $("#menu_text").value,
+        countdown_enabled: $("#countdown_enabled").checked,
+        countdown_hour: hour,
+        countdown_minute: minute,
+      });
+      if (!result) return;
+      if (result.status === 400 && result.data.errors) {
+        const items = [];
+        for (const [name, message] of Object.entries(result.data.errors)) {
+          const target = document.querySelector(`[data-error="${CSS.escape(name)}"]`);
+          if (target) { target.textContent = message; target.hidden = false; }
+          items.push(name + ": " + message);
+        }
+        banner("error", "Not applied. " + (result.data.detail || ""), items);
+        return;
+      }
+      if (!result.ok) { banner("error", result.data.detail || "Failed (HTTP " + result.status + ")."); return; }
+      render(result.data.show, [...$("#background_video").options].map((option) => option.value));
+      banner(result.data.message.includes("Could not") ? "warn" : "ok", result.data.message);
+    } catch (error) {
+      banner("error", "Network error: " + error.message);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  $("#unlock-form").addEventListener("submit", load);
+  $("#show").addEventListener("submit", apply);
+})();
+</script>
+</body>
+</html>

@@ -59,6 +59,12 @@
         "DJANGO_SECRET_KEY": "debug-secret-key",
         "DJANGO_DEBUG": "1"
       },
+      // Opens the show controls once runserver_plus is up (self-signed certificate: the browser warns once).
+      "serverReadyAction": {
+        "pattern": "Running on (https://[^\\s]+)",
+        "uriFormat": "%s/show/",
+        "action": "openExternally"
+      },
       "justMyCode": true
     },
     {
@@ -109,10 +115,13 @@
   ],
   "compounds": [
     {
-      "name": "Tier 2: Local preview stream + viewer",
+      // The control API edits config.json, which the sender reloads while streaming:
+      // https://127.0.0.1:8443/show/ (secret: INSTANCE_API_KEY of "Backend: Control API").
+      "name": "Tier 2: Local preview stream + viewer + control API",
       "configurations": [
         "Music: Local preview stream sender",
-        "Music: Local preview viewer"
+        "Music: Local preview viewer",
+        "Backend: Control API"
       ],
       "stopAll": true
     },

@@ -20,17 +20,6 @@ class ControlApiTests(TestCase):
         )
         self.assertEqual(response.status_code, 401)
 
-    def test_target_time_updates_and_returns_state(self):
-        response = self.client.post(
-            "/api/target-time/",
-            data=json.dumps({"hours": 2, "minutes": 45}),
-            content_type="application/json",
-            HTTP_X_INSTANCE_KEY=STRONG_SECRET,
-        )
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["hours"], 2)
-        self.assertEqual(response.json()["minutes"], 45)
-
     def test_push_json_parses_and_returns_payload(self):
         payload = {"name": "demo", "enabled": True, "count": 4}
         response = self.client.post(
@@ -69,7 +58,15 @@ class ConfigEditorTests(TestCase):
             "profiles": {"mixcloud": {"video_size": "1280x720", "audio_bitrate": "320k"}},
         }
         self.config_path.write_text(json.dumps(self.valid))
-        self.settings = override_settings(STREAM_CONFIG_PATH=self.config_path, STREAM_WORKDIR=base)
+        self.schedule_path = base / "startingSoonSchedule.js"
+        self.schedule_path.write_text("export const TARGET_HOUR = 19;\nexport const TARGET_MINUTE = 45;\n")
+        (base / "loops").mkdir()
+        (base / "loops" / "a.mp4").write_bytes(b"x")
+        (base / "loops" / "notes.txt").write_text("not a video")
+        self.settings = override_settings(
+            STREAM_CONFIG_PATH=self.config_path, STREAM_WORKDIR=base,
+            STARTING_SOON_SCHEDULE_PATH=self.schedule_path, BACKGROUND_VIDEO_DIRS=[base / "loops"],
+        )
         self.settings.enable()
 
     def tearDown(self):
@@ -142,3 +139,64 @@ class ConfigEditorTests(TestCase):
     def test_weak_server_secret_disables_the_api_in_production(self):
         response = self.client.get("/api/config/", HTTP_X_INSTANCE_KEY="short")
         self.assertEqual(response.status_code, 503)
+
+    # -- show controls -------------------------------------------------------
+    def show(self, changes, secret=SECRET):
+        headers = {"HTTP_X_INSTANCE_KEY": secret} if secret is not None else {}
+        return self.client.post("/api/show/", data=json.dumps(changes), content_type="application/json", **headers)
+
+    def test_show_requires_the_secret(self):
+        self.assertEqual(self.client.get("/api/show/").status_code, 401)
+        self.assertEqual(self.show({"countdown_enabled": True}, secret="wrong").status_code, 401)
+        self.assertNotIn("countdown_enabled", json.loads(self.config_path.read_text()))
+
+    def test_show_lists_backgrounds_and_defaults(self):
+        body = self.client.get("/api/show/", HTTP_X_INSTANCE_KEY=SECRET).json()
+        self.assertEqual(sorted(body["backgrounds"]), ["bg.mp4", "loops/a.mp4"])
+        self.assertEqual(body["show"]["background_video"], self.valid["background_video"])
+        self.assertFalse(body["show"]["countdown_enabled"])
+        self.assertEqual(body["show"]["menu_text"], "45 to 33 rpm\npopuri music")
+
+    def test_show_update_saves_config_and_schedule(self):
+        response = self.show({"background_video": "loops/a.mp4", "menu_text": " Disco night \n\n  vinyl only ",
+                              "countdown_enabled": True, "countdown_hour": 21, "countdown_minute": 5})
+        self.assertEqual(response.status_code, 200, response.content)
+        body = response.json()
+        self.assertEqual(body["show"]["menu_text"], "Disco night\nvinyl only")
+        self.assertIn("background_video", body["changed"])
+        saved = json.loads(self.config_path.read_text())
+        self.assertEqual((saved["countdown_enabled"], saved["countdown_hour"], saved["countdown_minute"]), (True, 21, 5))
+        self.assertEqual(saved["profiles"], self.valid["profiles"])  # untouched
+        self.assertEqual(self.schedule_path.read_text(),
+                         "export const TARGET_HOUR = 21;\nexport const TARGET_MINUTE = 5;\n")
+
+    def test_show_update_writes_where_the_active_profile_overrides(self):
+        config = dict(self.valid, profile="mixcloud",
+                      profiles={"mixcloud": {"background_video": self.valid["background_video"]}})
+        self.config_path.write_text(json.dumps(config))
+        self.assertEqual(self.show({"background_video": "loops/a.mp4"}).status_code, 200)
+        saved = json.loads(self.config_path.read_text())
+        self.assertEqual(saved["profiles"]["mixcloud"]["background_video"], "loops/a.mp4")
+        self.assertEqual(saved["background_video"], self.valid["background_video"])
+
+    def test_show_rejects_invalid_values(self):
+        errors = self.show({"countdown_hour": 24, "background_video": "loops/missing.mp4",
+                            "menu_text": "1\n2\n3\n4\n5", "rtmp_url": "rtmp://x/y"}).json()["errors"]
+        self.assertEqual(sorted(errors), ["rtmp_url"])  # unknown keys are refused first
+        errors = self.show({"countdown_hour": 24, "background_video": "loops/missing.mp4",
+                            "menu_text": "1\n2\n3\n4\n5"}).json()["errors"]
+        self.assertEqual(sorted(errors), ["background_video", "countdown_hour", "menu_text"])
+        self.assertEqual(json.loads(self.config_path.read_text()), self.valid)
+
+    def test_target_time_is_the_countdown_time(self):
+        response = self.client.post(
+            "/api/target-time/",
+            data=json.dumps({"hours": 2, "minutes": 45}),
+            content_type="application/json",
+            HTTP_X_INSTANCE_KEY=STRONG_SECRET,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"hours": 2, "minutes": 45})
+        saved = json.loads(self.config_path.read_text())
+        self.assertEqual((saved["countdown_hour"], saved["countdown_minute"]), (2, 45))
+        self.assertIn("TARGET_HOUR = 2;", self.schedule_path.read_text())

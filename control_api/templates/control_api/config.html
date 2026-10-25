@@ -37,12 +37,13 @@
   .field .req { color: var(--accent); }
   .help { grid-column: 2; font-size: 13px; color: var(--muted); }
   .err { grid-column: 2; font-size: 13px; color: var(--error); font-weight: 600; }
-  .field.invalid input, .field.invalid select { border-color: var(--error); }
-  input[type=text], input[type=password], input[type=number], select {
+  .field.invalid input, .field.invalid select, .field.invalid textarea { border-color: var(--error); }
+  textarea { resize: vertical; }
+  input[type=text], input[type=password], input[type=number], select, textarea {
     width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
     background: var(--surface-2); color: var(--text); font: inherit; min-width: 0;
   }
-  input:focus, select:focus, button:focus-visible { outline: 3px solid var(--focus); outline-offset: 1px; }
+  input:focus, select:focus, textarea:focus, button:focus-visible { outline: 3px solid var(--focus); outline-offset: 1px; }
   .with-toggle { display: flex; gap: 6px; }
   button { font: inherit; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-2);
            color: var(--text); padding: 8px 14px; cursor: pointer; }
@@ -65,6 +66,7 @@
   footer { position: fixed; left: 0; right: 0; bottom: 0; background: var(--surface); border-top: 1px solid var(--border); }
   footer .wrap { padding: 12px 16px; display: flex; gap: 12px; align-items: center; justify-content: flex-end; flex-wrap: wrap; }
   footer .status { margin-right: auto; color: var(--muted); font-size: 13px; }
+  header a { color: var(--accent); font-size: 14px; }
   [hidden] { display: none !important; }
   @media (max-width: 640px) {
     .field { grid-template-columns: 1fr; }
@@ -79,6 +81,7 @@
 <div class="wrap">
   <header>
     <h1>Stream settings</h1>
+    <a href="/show/">Show controls</a>
     <span id="service" class="pill" hidden></span>
   </header>
 
@@ -125,7 +128,7 @@
 (() => {
   "use strict";
   const $ = (selector) => document.querySelector(selector);
-  let options = [], groups = [], dirty = false;
+  let options = [], groups = [], backgrounds = [], dirty = false;
 
   function el(tag, attributes = {}, ...children) {
     const node = document.createElement(tag);
@@ -173,6 +176,21 @@
       box.dataset.kind = "bool";
       return el("label", { class: "switch" }, box, el("span", { text: "Enabled" }));
     }
+    if (option.multiline) {
+      const area = el("textarea", { id, rows: "3", spellcheck: "false", oninput: markDirty,
+                                    placeholder: "Default: " + defaultText(option) });
+      area.value = value === undefined || value === null ? "" : String(value);
+      area.dataset.kind = option.type;
+      return area;
+    }
+    if (option.name === "background_video" && backgrounds.length) {
+      const select = el("select", { id, onchange: markDirty });
+      if (!option.required || value === undefined || value === null) select.append(el("option", { value: "", text: "Choose a video" }));
+      for (const path of backgrounds) select.append(el("option", { value: path, text: path.split("/").pop() }));
+      if (value && !backgrounds.includes(value)) select.append(el("option", { value, text: value }));
+      select.value = value === undefined || value === null ? "" : String(value);
+      return select;
+    }
     if (option.choices && option.choices.length) {
       const select = el("select", { id, onchange: markDirty });
       if (!option.required) select.append(el("option", { value: "", text: "Default (" + defaultText(option) + ")" }));
@@ -200,7 +218,7 @@
   }
 
   function readInput(container) {
-    const control = container.querySelector("input, select");
+    const control = container.querySelector("input, select, textarea");
     if (control.dataset.kind === "bool") return control.checked;
     const raw = control.value.trim();
     if (raw === "") return undefined;
@@ -367,6 +385,7 @@
       const result = await call("GET");
       if (!result) return;
       if (!result.ok) { banner("error", result.data.detail || "Could not load the settings (HTTP " + result.status + ")."); return; }
+      backgrounds = result.data.backgrounds || [];
       renderGroups(result.data.config);
       renderProfiles(result.data.config);
       setService(result.data.service);

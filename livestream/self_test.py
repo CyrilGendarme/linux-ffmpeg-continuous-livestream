@@ -190,27 +190,35 @@ def check_encoder_speed(config_path: Optional[str]) -> str:
 
     from .config import parse_args as parse_stream_args
     from .ffmpeg import PCM_CHANNELS, PCM_SAMPLE_RATE
-    from .runner import OverlayFeed, prepare_background, start_encoder
+    from .runner import BackgroundFeed, OverlayFeed, prepare_background, start_encoder
 
     settings = parse_stream_args(["--config", config_path, "--rtmp-url", "-"])
-    background = prepare_background(settings)
+    background = BackgroundFeed(prepare_background(settings))
     overlay = OverlayFeed(settings.video_fps, 0.0, announce)
     overlay.renderer.on_track({"artist": "Self Test Artist", "title": "Self Test Title", "album": "Album", "year": "2026"}, None)
 
-    process, panel_fd, title_fd = start_encoder(
-        background, "-", "null", settings, realtime=False, duration=ENCODER_TEST_SECONDS
+    process, background_fd, overlay_fds = start_encoder(
+        "-", "null", settings, realtime=False, duration=ENCODER_TEST_SECONDS
     )
     stop = threading.Event()
 
     def feed_overlay() -> None:
         try:
-            overlay.stream(panel_fd, title_fd, stop)
+            overlay.stream(*overlay_fds, stop)
+        except OSError:
+            pass
+
+    def feed_background() -> None:
+        try:
+            background.stream(background_fd, stop)
         except OSError:
             pass
 
     overlay_thread = threading.Thread(target=feed_overlay, daemon=True)
+    background_thread = threading.Thread(target=feed_background, daemon=True)
     started = time.monotonic()
     overlay_thread.start()
+    background_thread.start()
     silence = bytes(int(PCM_SAMPLE_RATE * PCM_CHANNELS * 4 * ENCODER_TEST_SECONDS))
     try:
         try:
@@ -226,6 +234,7 @@ def check_encoder_speed(config_path: Optional[str]) -> str:
             process.kill()
     elapsed = time.monotonic() - started
     overlay_thread.join(timeout=5)
+    background_thread.join(timeout=5)
     if process.returncode != 0:
         raise RuntimeError(f"Encoder failed with exit code {process.returncode}")
     speed = ENCODER_TEST_SECONDS / elapsed
