@@ -313,6 +313,11 @@ Then open `https://<domain>:8443/config/`. The secret and settings live in
 `~/.config/music-livestream/control.env` (mode 600). Manage it with
 `.venv/bin/python -m livestream.service control-status | control-logs | uninstall-control`.
 
+The `/show/` page also includes Restream channel controls. Add a Restream app's client ID and secret to
+`config.json`, configure its callback URL as shown on the page, and grant the `channels.read` and `channels.write`
+scopes. Once connected, you can edit each channel's title and description, set one title across all channels, and
+enable or disable destinations without disconnecting them.
+
 For local development, the "Backend: Control API" launch configuration runs it with `DJANGO_DEBUG=1` on
 `https://127.0.0.1:8443/config/` only.
 

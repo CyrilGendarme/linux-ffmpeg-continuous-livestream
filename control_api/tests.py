@@ -221,10 +221,14 @@ class RestreamTests(TestCase):
                                           RESTREAM_REDIRECT_URI="https://radio.example/restream/callback/")
         self.settings.enable()
         self.calls = []
+        restream._platforms.update(names={}, expires=0.0)
 
     def tearDown(self):
         self.settings.disable()
         self.tmp.cleanup()
+
+    def token_calls(self):
+        return [call for call in self.calls if call[1] == restream.TOKEN_URL]
 
     def fake_restream(self, method, url, body=None, headers=None):
         self.calls.append((method, url, body, headers))
@@ -232,10 +236,19 @@ class RestreamTests(TestCase):
             fields = parse_qs(body.decode())
             return {"access_token": f"access-{len(self.calls)}", "refresh_token": f"refresh-{len(self.calls)}",
                     "expires_in": 3600, "refreshTokenExpiresIn": 31536000, "_fields": fields}
+        if url.endswith("/v2/platform/all"):
+            return [{"id": 5, "name": "Youtube"}, {"id": 29, "name": "Custom RTMP"}]
         if url.endswith("/v2/user/channels"):
-            return {"channels": [{"id": 1, "displayName": "YouTube"}, {"id": 2, "displayName": "Custom RTMP"}]}
+            return {"channels": [{"id": 1, "displayName": "DjGratuit", "platformId": 5},
+                                 {"id": 2, "displayName": "Server", "platformId": 29}]}
+        if url.endswith("/v2/user/channels/1"):
+            return {"id": 1, "active": True}
+        if url.endswith("/v2/user/channels/2"):
+            return {"id": 2, "active": False}
         if "/channel-meta/2" in url:
-            raise restream.RestreamError("Restream refused the request (400): not supported")
+            raise restream.RestreamError("Restream refused the request (400): Titles not supported for this platform")
+        if "/channel-meta/1" in url and method == "GET":
+            return {"title": "Current title", "description": "Current description"}
         return {}
 
     def connect(self):
@@ -273,7 +286,11 @@ class RestreamTests(TestCase):
         body = response.json()
         self.assertEqual(response.status_code, 200)
         self.assertEqual(body["title"], "Disco night")
-        self.assertEqual([(item["name"], item["ok"]) for item in body["results"]], [("YouTube", True), ("Custom RTMP", False)])
+        self.assertEqual([(item["name"], item["ok"], item["unsupported"] if not item["ok"] else None)
+                          for item in body["results"]],
+                         [("DjGratuit (Youtube)", True, None), ("Server (Custom RTMP)", False, True)])
+        self.assertTrue(body["ok"])  # a platform without titles is skipped, not a failure
+        self.assertIn("Skipped", body["message"])
         patch = [call for call in self.calls if call[0] == "PATCH"][0]
         self.assertTrue(patch[1].endswith("/v2/user/channel-meta/1"))
         self.assertEqual(json.loads(patch[2]), {"title": "Disco night"})
@@ -287,13 +304,67 @@ class RestreamTests(TestCase):
         self.state_path.write_text(json.dumps(state))
         with mock.patch.object(restream, "_request", side_effect=self.fake_restream):
             self.client.get("/api/restream/", HTTP_X_INSTANCE_KEY=SECRET)
-        refresh = self.calls[1]
+        refresh = self.token_calls()[1]
         self.assertEqual(parse_qs(refresh[2].decode())["grant_type"], ["refresh_token"])
         self.assertEqual(parse_qs(refresh[2].decode())["refresh_token"], ["refresh-1"])
-        self.assertEqual(json.loads(self.state_path.read_text())["refresh_token"], "refresh-2")
+        self.assertEqual(json.loads(self.state_path.read_text())["refresh_token"], f"refresh-{self.calls.index(refresh) + 1}")
 
     def test_title_is_validated(self):
         for title in ("", "   ", "x" * 141, 5):
             response = self.client.post("/api/restream/", data=json.dumps({"title": title}),
                                         content_type="application/json", HTTP_X_INSTANCE_KEY=SECRET)
             self.assertEqual(response.status_code, 400, title)
+
+    def test_status_lists_channels_with_platform_and_title(self):
+        self.connect()
+        with mock.patch.object(restream, "_request", side_effect=self.fake_restream):
+            channels = self.client.get("/api/restream/", HTTP_X_INSTANCE_KEY=SECRET).json()["channels"]
+        self.assertEqual([(c["id"], c["platform"], c["title"], c["description"], c["active"])
+                          for c in channels],
+                         [(1, "Youtube", "Current title", "Current description", True),
+                          (2, "Custom RTMP", None, None, False)])
+
+    def test_title_on_one_channel_only(self):
+        self.connect()
+        with mock.patch.object(restream, "_request", side_effect=self.fake_restream):
+            response = self.client.post("/api/restream/", data=json.dumps({"title": "Only YouTube", "channels": [1]}),
+                                        content_type="application/json", HTTP_X_INSTANCE_KEY=SECRET)
+        self.assertEqual(response.json()["ok"], True)
+        patches = [call[1] for call in self.calls if call[0] == "PATCH"]
+        self.assertEqual(len(patches), 1)
+        self.assertTrue(patches[0].endswith("/channel-meta/1"))
+        self.assertEqual(restream.last_title(), "")  # the "every channel" title is unchanged
+
+    def test_set_channel_description(self):
+        self.connect()
+        with mock.patch.object(restream, "_request", side_effect=self.fake_restream):
+            response = self.client.post(
+                "/api/restream/", data=json.dumps({"description": "  First line\nSecond line  ", "channels": [1]}),
+                content_type="application/json", HTTP_X_INSTANCE_KEY=SECRET,
+            )
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()["description"], "First line\nSecond line")
+        patch = [call for call in self.calls if call[0] == "PATCH" and "/channel-meta/" in call[1]][0]
+        self.assertTrue(patch[1].endswith("/channel-meta/1"))
+        self.assertEqual(json.loads(patch[2]), {"description": "First line\nSecond line"})
+
+    def test_channel_can_be_activated_or_deactivated(self):
+        self.connect()
+        with mock.patch.object(restream, "_request", side_effect=self.fake_restream):
+            response = self.client.post(
+                "/api/restream/", data=json.dumps({"channel_id": 1, "active": False}),
+                content_type="application/json", HTTP_X_INSTANCE_KEY=SECRET,
+            )
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json(), {"ok": True, "channel_id": 1, "active": False})
+        patch = [call for call in self.calls if call[0] == "PATCH" and "/user/channel/" in call[1]][0]
+        self.assertTrue(patch[1].endswith("/user/channel/1"))
+        self.assertEqual(json.loads(patch[2]), {"active": False})
+
+    def test_channel_active_state_requires_boolean_and_id(self):
+        for payload in ({"channel_id": 1, "active": "false"}, {"channel_id": True, "active": False}):
+            response = self.client.post(
+                "/api/restream/", data=json.dumps(payload), content_type="application/json",
+                HTTP_X_INSTANCE_KEY=SECRET,
+            )
+            self.assertEqual(response.status_code, 400)

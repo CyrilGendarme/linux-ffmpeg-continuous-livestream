@@ -25,13 +25,18 @@ AUTHORIZE_URL = f"{API}/login"
 TOKEN_URL = f"{API}/oauth/token"
 STATE_TTL_SECONDS = 600  # an authorization must come back within 10 minutes
 REFRESH_MARGIN_SECONDS = 60
+PLATFORMS_TTL_SECONDS = 86400
 
 _lock = threading.Lock()
 _pending_states: Dict[str, float] = {}  # OAuth `state` -> expiry (monotonic)
+_platforms: Dict[str, object] = {"names": {}, "expires": 0.0}  # platform id -> name (public list, cached)
 
 
 class RestreamError(Exception):
-    pass
+    @property
+    def unsupported(self) -> bool:
+        """The platform has no title (e.g. Kick, Mixcloud, custom RTMP)."""
+        return "not supported" in str(self).lower()
 
 
 # ------------------------------------------------------------------ storage
@@ -172,22 +177,79 @@ def channels(credentials: tuple) -> List[dict]:
     return _api(credentials, "GET", "/user/channels").get("channels", [])
 
 
-def set_title(credentials: tuple, title: str, channel_ids: Optional[List[int]] = None) -> List[dict]:
-    """Set the stream title on the given channels (default: all). Returns one result per channel."""
+def platform_names() -> Dict[int, str]:
+    """Platform id -> name (e.g. 1 -> Twitch), from Restream's public list; {} if unavailable."""
+    if _platforms["expires"] < time.monotonic():
+        try:
+            listing = _request("GET", f"{API}/v2/platform/all")
+        except RestreamError:
+            return _platforms["names"]
+        _platforms["names"] = {item["id"]: item.get("name", "") for item in listing if isinstance(item, dict)}
+        _platforms["expires"] = time.monotonic() + PLATFORMS_TTL_SECONDS
+    return _platforms["names"]
+
+
+def channels_with_titles(credentials: tuple) -> List[dict]:
+    """channels() plus editable metadata and active state where Restream exposes them."""
+    names = platform_names()
+    result = []
+    for channel in channels(credentials):
+        channel = dict(
+            channel, platform=names.get(channel.get("platformId"), ""),
+            title=None, description=None, title_supported=True, description_supported=True,
+            active=None,
+        )
+        try:
+            metadata = _api(credentials, "GET", f"/user/channel-meta/{int(channel['id'])}")
+            channel["title"] = metadata.get("title")
+            channel["description"] = metadata.get("description")
+        except RestreamError as exc:
+            if exc.unsupported:
+                channel["title_supported"] = False
+                channel["description_supported"] = False
+            else:
+                channel["title_error"] = str(exc)
+                channel["description_error"] = str(exc)
+        try:
+            detail = _api(credentials, "GET", f"/user/channels/{int(channel['id'])}")
+            channel["active"] = detail.get("active")
+            if not isinstance(channel["active"], bool):
+                channel["active"] = None
+                channel["active_error"] = "Restream did not return this channel's active state."
+        except RestreamError as exc:
+            channel["active_error"] = str(exc)
+        result.append(channel)
+    return result
+
+
+def set_channel_metadata(credentials: tuple, metadata: dict, channel_ids: Optional[List[int]] = None) -> List[dict]:
+    """Set title and/or description on the selected channels (default: all)."""
     targets = channels(credentials)
     if channel_ids is not None:
         targets = [channel for channel in targets if channel.get("id") in channel_ids]
     results = []
     for channel in targets:
-        result = {"id": channel.get("id"), "name": channel.get("displayName") or str(channel.get("id")), "ok": True}
+        name = channel.get("displayName") or str(channel.get("id"))
+        platform = platform_names().get(channel.get("platformId"))
+        result = {"id": channel.get("id"), "name": f"{name} ({platform})" if platform else name, "ok": True}
         try:
-            _api(credentials, "PATCH", f"/user/channel-meta/{int(channel['id'])}", {"title": title})
+            _api(credentials, "PATCH", f"/user/channel-meta/{int(channel['id'])}", metadata)
         except RestreamError as exc:
-            result.update(ok=False, error=str(exc))
+            result.update(ok=False, error=str(exc), unsupported=exc.unsupported)
         results.append(result)
-    if any(result["ok"] for result in results):
+    if channel_ids is None and "title" in metadata and any(result["ok"] for result in results):
         with _lock:
             stored = _load()
-            stored["last_title"] = title
+            stored["last_title"] = metadata["title"]
             _store(stored)
     return results
+
+
+def set_title(credentials: tuple, title: str, channel_ids: Optional[List[int]] = None) -> List[dict]:
+    """Set the stream title on the given channels (default: all)."""
+    return set_channel_metadata(credentials, {"title": title}, channel_ids)
+
+
+def set_channel_active(credentials: tuple, channel_id: int, active: bool) -> None:
+    """Enable or disable a destination without disconnecting it from Restream."""
+    _api(credentials, "PATCH", f"/user/channel/{channel_id}", {"active": active})

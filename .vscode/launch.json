@@ -57,7 +57,10 @@
       "env": {
         "INSTANCE_API_KEY": "change-me-shared-secret",
         "DJANGO_SECRET_KEY": "debug-secret-key",
-        "DJANGO_DEBUG": "1"
+        "DJANGO_DEBUG": "1",
+        // Must equal the redirect URI of the Restream app. Restream sends the browser there, and
+        // the VPS's nginx forwards it to this laptop through: ssh -N -R 8443:127.0.0.1:8443 <user>@stream.popuri.fm
+        "RESTREAM_REDIRECT_URI": "https://stream.popuri.fm/restream/callback/"
       },
       // Opens the show controls once runserver_plus is up (self-signed certificate: the browser warns once).
       "serverReadyAction": {

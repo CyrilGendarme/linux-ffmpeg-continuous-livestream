@@ -14,6 +14,7 @@ from .auth import check_secret
 from .config_views import _read_config
 
 MAX_TITLE_LENGTH = 140  # what the strictest platforms (e.g. Twitch) accept
+MAX_DESCRIPTION_LENGTH = 5000
 
 
 def _credentials():
@@ -43,7 +44,8 @@ def _status(request, credentials) -> dict:
 @never_cache
 @require_http_methods(["GET", "POST", "DELETE"])
 def restream_api(request):
-    """GET: connection status and channels. POST {"title": "...", "channels": [ids]?}: set the title.
+    """GET: connection status and channels with their titles.
+    POST metadata fields with optional channels, or {"channel_id": id, "active": bool}.
     DELETE: forget the Restream connection."""
     denied = check_secret(request)
     if denied is not None:
@@ -59,7 +61,7 @@ def restream_api(request):
         status["channels"] = []
         if status["connected"]:
             try:
-                status["channels"] = restream.channels(credentials)
+                status["channels"] = restream.channels_with_titles(credentials)
             except restream.RestreamError as exc:
                 status["error"] = str(exc)
         return JsonResponse(status)
@@ -70,14 +72,45 @@ def restream_api(request):
         return JsonResponse({"detail": "Request body must be valid JSON."}, status=400)
     if not isinstance(payload, dict):
         return JsonResponse({"detail": "Expected {\"title\": \"...\"}."}, status=400)
+    if "active" in payload or "channel_id" in payload:
+        channel_id, active = payload.get("channel_id"), payload.get("active")
+        if not isinstance(channel_id, int) or isinstance(channel_id, bool):
+            return JsonResponse({"detail": "'channel_id' must be a channel id."}, status=400)
+        if not isinstance(active, bool):
+            return JsonResponse({"detail": "'active' must be true or false."}, status=400)
+        if credentials is None:
+            return JsonResponse({"detail": "Set the Restream client ID and secret in the stream settings first."},
+                                status=409)
+        try:
+            restream.set_channel_active(credentials, channel_id, active)
+        except restream.RestreamError as exc:
+            return JsonResponse({"detail": str(exc)}, status=502)
+        return JsonResponse({"ok": True, "channel_id": channel_id, "active": active})
+
+    metadata = {}
     title = payload.get("title")
-    if not isinstance(title, str) or not title.strip():
-        return JsonResponse({"detail": "The title must be a non-empty string.", "errors": {"title": "is required"}},
-                            status=400)
-    title = " ".join(title.split())
-    if len(title) > MAX_TITLE_LENGTH:
-        return JsonResponse({"detail": f"The title must be at most {MAX_TITLE_LENGTH} characters.",
-                             "errors": {"title": f"must be at most {MAX_TITLE_LENGTH} characters"}}, status=400)
+    if "title" in payload:
+        if not isinstance(title, str) or not title.strip():
+            return JsonResponse({"detail": "The title must be a non-empty string.",
+                                 "errors": {"title": "is required"}}, status=400)
+        title = " ".join(title.split())
+        if len(title) > MAX_TITLE_LENGTH:
+            return JsonResponse({"detail": f"The title must be at most {MAX_TITLE_LENGTH} characters.",
+                                 "errors": {"title": f"must be at most {MAX_TITLE_LENGTH} characters"}}, status=400)
+        metadata["title"] = title
+    description = payload.get("description")
+    if "description" in payload:
+        if not isinstance(description, str):
+            return JsonResponse({"detail": "The description must be a string.",
+                                 "errors": {"description": "must be a string"}}, status=400)
+        description = description.strip()
+        if len(description) > MAX_DESCRIPTION_LENGTH:
+            return JsonResponse({"detail": f"The description must be at most {MAX_DESCRIPTION_LENGTH} characters.",
+                                 "errors": {"description": f"must be at most {MAX_DESCRIPTION_LENGTH} characters"}},
+                                status=400)
+        metadata["description"] = description
+    if not metadata:
+        return JsonResponse({"detail": "Provide a title or description to update."}, status=400)
     channel_ids = payload.get("channels")
     if channel_ids is not None and (
         not isinstance(channel_ids, list) or not all(isinstance(item, int) and not isinstance(item, bool) for item in channel_ids)
@@ -86,17 +119,24 @@ def restream_api(request):
     if credentials is None:
         return JsonResponse({"detail": "Set the Restream client ID and secret in the stream settings first."}, status=409)
     try:
-        results = restream.set_title(credentials, title, channel_ids)
+        results = restream.set_channel_metadata(credentials, metadata, channel_ids)
     except restream.RestreamError as exc:
         return JsonResponse({"detail": str(exc)}, status=502)
-    failed = [result for result in results if not result["ok"]]
-    if not results:
-        message = "No Restream channel to update."
-    elif failed:
-        message = f"Title set on {len(results) - len(failed)} of {len(results)} channels."
+    updated = [result for result in results if result["ok"]]
+    skipped = [result for result in results if result.get("unsupported")]
+    failed = [result for result in results if not result["ok"] and not result.get("unsupported")]
+    if not updated and not failed:
+        message = "No Restream channel supports this metadata." if skipped else "No Restream channel to update."
     else:
-        message = f"Title set on {len(results)} channel(s)."
-    return JsonResponse({"ok": bool(results) and not failed, "title": title, "results": results, "message": message})
+        message = f"Metadata set on {len(updated)} of {len(updated) + len(failed)} channel(s)."
+    if skipped:
+        message += f" Skipped (metadata unavailable): {', '.join(result['name'] for result in skipped)}."
+    response = {"ok": bool(updated) and not failed, "results": results, "message": message}
+    if "title" in metadata:
+        response["title"] = metadata["title"]
+    if "description" in metadata:
+        response["description"] = metadata["description"]
+    return JsonResponse(response)
 
 
 @csrf_exempt  # authenticated by a header secret, not by cookies

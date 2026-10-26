@@ -53,6 +53,16 @@
   .actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
   .results { margin: 8px 0 0; padding-left: 18px; font-size: 13px; }
   .results .failed { color: var(--error); }
+  .channel { border-top: 1px solid var(--border); padding: 12px 0 4px; }
+  .channel:first-child { border-top: 0; }
+  .channel .line { display: flex; gap: 8px; }
+  .channel .line input { flex: 1; }
+  .channel textarea { width: 100%; }
+  .channel .metadata { display: grid; gap: 10px; }
+  .channel .meta-field { display: grid; gap: 6px; }
+  .channel .active-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+  .channel .state { font-size: 13px; color: var(--muted); margin-top: 4px; min-height: 1em; }
+  .channel .state.ok { color: var(--ok); } .channel .state.failed { color: var(--error); }
   code { font-size: 13px; overflow-wrap: anywhere; }
   [hidden] { display: none !important; }
 </style>
@@ -111,7 +121,7 @@
   </form>
 
   <form id="title-form" class="card" hidden>
-    <h2>Stream title (Restream)</h2>
+    <h2>Stream channels (Restream)</h2>
     <div id="restream-setup" hidden>
       <p class="note">Create an app at <a href="https://developers.restream.io/apps" target="_blank" rel="noopener">developers.restream.io/apps</a>
         with the redirect URI <code id="redirect-uri"></code>, then enter its client ID and secret in
@@ -122,14 +132,19 @@
       <div class="actions"><button type="button" class="primary" id="connect">Connect Restream</button></div>
     </div>
     <div id="restream-title" hidden>
-      <label class="block" for="title">Title on every Restream channel</label>
-      <input type="text" id="title" maxlength="140" spellcheck="true">
-      <div class="help" id="channels"></div>
-      <div class="err" data-error="title" hidden></div>
-      <ul class="results" id="title-results" hidden></ul>
+      <div id="channels"></div>
+      <div class="channel">
+        <label class="block" for="title">Same title on every channel</label>
+        <div class="line">
+          <input type="text" id="title" maxlength="140" spellcheck="true">
+          <button type="submit" class="primary" id="set-title">Set on all</button>
+        </div>
+        <div class="err" data-error="title" hidden></div>
+        <ul class="results" id="title-results" hidden></ul>
+      </div>
       <div class="actions" style="margin-top:12px">
+        <button type="button" id="reload-titles">Reload channels</button>
         <button type="button" id="disconnect">Disconnect</button>
-        <button type="submit" class="primary" id="set-title">Set title</button>
       </div>
     </div>
   </form>
@@ -237,7 +252,7 @@
     }
   }
 
-  // ---- Restream stream title ----------------------------------------------
+  // ---- Restream stream channels -------------------------------------------
   function renderRestream(status) {
     $("#title-form").hidden = false;
     $("#redirect-uri").textContent = status.redirect_uri;
@@ -245,9 +260,145 @@
     $("#restream-connect").hidden = !status.configured || status.connected;
     $("#restream-title").hidden = !status.connected;
     if (!$("#title").value) $("#title").value = status.last_title || "";
-    const names = (status.channels || []).map((channel) => channel.displayName || channel.id);
-    $("#channels").textContent = status.error ? status.error
-      : names.length ? "Channels: " + names.join(", ") : "No channel found on this Restream account.";
+    const root = $("#channels");
+    const channels = status.channels || [];
+    if (status.error || !channels.length) {
+      root.replaceChildren(Object.assign(document.createElement("p"), {
+        className: "note", textContent: status.error || "No channel found on this Restream account." }));
+      return;
+    }
+    root.replaceChildren(...channels.map(channelRow));
+  }
+
+  // One channel: editable metadata and an independent active toggle.
+  function channelRow(channel) {
+    const id = "channel-" + channel.id;
+    const label = (channel.platform ? channel.platform + " · " : "") + (channel.displayName || channel.id);
+    const titleInput = Object.assign(document.createElement("input"), {
+      type: "text", id: id + "-title", maxLength: 140, spellcheck: true,
+    });
+    titleInput.dataset.field = "title";
+    titleInput.value = channel.title || "";
+    const description = Object.assign(document.createElement("textarea"), {
+      id: id + "-description", rows: 3, maxLength: 5000, spellcheck: true,
+    });
+    description.value = channel.description || "";
+    const titleLabel = Object.assign(document.createElement("label"), {
+      className: "block", htmlFor: titleInput.id, textContent: "Title",
+    });
+    const descriptionLabel = Object.assign(document.createElement("label"), {
+      className: "block", htmlFor: description.id, textContent: "Description",
+    });
+    const titleButton = Object.assign(document.createElement("button"), {
+      type: "button", className: "primary", textContent: "Set title",
+    });
+    const descriptionButton = Object.assign(document.createElement("button"), {
+      type: "button", className: "primary", textContent: "Set description",
+    });
+    const titleState = Object.assign(document.createElement("div"), { className: "state" });
+    titleState.dataset.state = "title";
+    const descriptionState = Object.assign(document.createElement("div"), { className: "state" });
+    descriptionState.dataset.state = "description";
+    const metadata = Object.assign(document.createElement("div"), { className: "metadata" });
+    const activeControls = Object.assign(document.createElement("div"), { className: "active-controls" });
+    const activeStatus = Object.assign(document.createElement("span"), { className: "state" });
+    if (typeof channel.active === "boolean") {
+      activeStatus.textContent = channel.active ? "Active" : "Inactive";
+    } else {
+      activeStatus.className = "state failed";
+      activeStatus.textContent = "Current state unknown";
+    }
+    const activate = Object.assign(document.createElement("button"), { type: "button", textContent: "Activate" });
+    const deactivate = Object.assign(document.createElement("button"), { type: "button", textContent: "Deactivate" });
+    if (channel.active_error) {
+      activeStatus.title = "Channel state unavailable: " + channel.active_error;
+    }
+    if (channel.title_error) {
+      titleState.className = "state failed";
+      titleState.textContent = "Current title unreadable: " + channel.title_error;
+    }
+    if (channel.description_error) {
+      descriptionState.className = "state failed";
+      descriptionState.textContent = "Current description unreadable: " + channel.description_error;
+    }
+    if (channel.title_supported === false) {
+      titleInput.disabled = true;
+      titleInput.placeholder = "Titles are not supported on this platform";
+      titleButton.disabled = true;
+    }
+    if (channel.description_supported === false) {
+      description.disabled = true;
+      description.placeholder = "Descriptions are not supported on this platform";
+    }
+    descriptionButton.disabled = channel.description_supported === false;
+    titleButton.addEventListener("click", () => setChannelMetadata(channel.id, "title", titleInput, titleButton, titleState));
+    descriptionButton.addEventListener("click", () =>
+      setChannelMetadata(channel.id, "description", description, descriptionButton, descriptionState));
+    activate.addEventListener("click", () => setChannelActive(channel.id, true, activate, deactivate, activeStatus));
+    deactivate.addEventListener("click", () => setChannelActive(channel.id, false, activate, deactivate, activeStatus));
+    const row = Object.assign(document.createElement("div"), { className: "channel" });
+    row.dataset.channel = channel.id;
+    const titleField = Object.assign(document.createElement("div"), { className: "meta-field" });
+    const titleLine = Object.assign(document.createElement("div"), { className: "line" });
+    titleLine.append(titleInput, titleButton);
+    titleField.append(titleLabel, titleLine, titleState);
+    const descriptionField = Object.assign(document.createElement("div"), { className: "meta-field" });
+    descriptionField.append(descriptionLabel, description, descriptionButton, descriptionState);
+    row.append(
+      Object.assign(document.createElement("div"), { className: "block", textContent: label }),
+      metadata, activeControls);
+    metadata.append(titleField, descriptionField);
+    activeControls.append(activeStatus, activate, deactivate);
+    return row;
+  }
+
+  async function setChannelMetadata(channelId, field, input, button, state) {
+    state.className = "state";
+    state.textContent = "Setting…";
+    button.disabled = true;
+    try {
+      const payload = { [field]: input.value, channels: [channelId] };
+      const result = await call("POST", payload, "/api/restream/");
+      if (!result) { state.textContent = ""; return; }
+      const item = (result.data.results || [])[0];
+      if (result.ok && item && item.ok) {
+        input.value = result.data[field];
+        state.className = "state ok";
+        state.textContent = field === "title" ? "Title updated" : "Description updated";
+      } else {
+        state.className = "state failed";
+        const errors = result.data.errors || {};
+        state.textContent = (item && item.error) || (errors[field] ? field + " " + errors[field]
+          : result.data.detail || "Failed (HTTP " + result.status + ").");
+      }
+    } catch (error) {
+      state.className = "state failed";
+      state.textContent = "Network error: " + error.message;
+    } finally {
+      button.disabled = input.disabled;
+    }
+  }
+
+  async function setChannelActive(channelId, active, activate, deactivate, state) {
+    activate.disabled = deactivate.disabled = true;
+    state.className = "state";
+    state.textContent = active ? "Activating…" : "Deactivating…";
+    try {
+      const result = await call("POST", { channel_id: channelId, active }, "/api/restream/");
+      if (!result) { state.textContent = "Current state unknown"; return; }
+      if (result.ok) {
+        state.className = "state ok";
+        state.textContent = active ? "Active" : "Inactive";
+      } else {
+        state.className = "state failed";
+        state.textContent = result.data.detail || "Failed (HTTP " + result.status + ").";
+      }
+    } catch (error) {
+      state.className = "state failed";
+      state.textContent = "Network error: " + error.message;
+    } finally {
+      activate.disabled = deactivate.disabled = false;
+    }
   }
 
   async function loadRestream() {
@@ -284,11 +435,20 @@
         return;
       }
       $("#title").value = result.data.title;
-      list.replaceChildren(...result.data.results.map((item) => Object.assign(document.createElement("li"), {
+      const shown = result.data.results.filter((item) => !item.unsupported);
+      list.replaceChildren(...shown.map((item) => Object.assign(document.createElement("li"), {
         className: item.ok ? "" : "failed",
         textContent: item.name + (item.ok ? ": updated" : ": " + item.error),
       })));
-      list.hidden = !result.data.results.length;
+      list.hidden = !shown.length;
+      for (const item of shown) {
+        const row = document.querySelector(`.channel[data-channel="${item.id}"]`);
+        if (!row) continue;
+        if (item.ok) row.querySelector('[data-field="title"]').value = result.data.title;
+        const titleState = row.querySelector('[data-state="title"]');
+        titleState.className = "state " + (item.ok ? "ok" : "failed");
+        titleState.textContent = item.ok ? "Title updated" : item.error;
+      }
       banner(result.data.ok ? "ok" : "warn", result.data.message);
     } catch (error) {
       banner("error", "Network error: " + error.message);
@@ -306,6 +466,7 @@
   $("#title-form").addEventListener("submit", setTitle);
   $("#connect").addEventListener("click", connect);
   $("#disconnect").addEventListener("click", disconnect);
+  $("#reload-titles").addEventListener("click", loadRestream);
 })();
 </script>
 </body>

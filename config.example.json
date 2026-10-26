@@ -3,6 +3,8 @@
   "background_video": "submodules/obscustomsetup/assets/stream loop 1.mp4",
   "rtmp_url": "rtmp://127.0.0.1:1935/radio",
   "output_url": "rtmp://live.restream.io/live/re_11962011_event92dd62ab359847dfbd8589a7b3675328",
+  "restream_client_id": "paste-the-client-id-here",
+  "restream_client_secret": "paste-the-client-secret-here",
   "takeover_delay": 1.0,
   "release_timeout": 3.0,
   "restart_delay": 2.0,
