@@ -234,6 +234,8 @@ OBS → **Settings → Output** (Output Mode: *Advanced*, tab *Streaming*):
 `video_size` / `video_fps` on the server. Other values work: they are scaled and converted on the server.
 
 **Settings → Audio**: Sample Rate `48 kHz`, Channels `Stereo` (others are converted on the server).
+In **Settings → Output → Streaming**, select the audio track that contains your mix (usually **Track 1**);
+only the track OBS sends is available to the server.
 
 ### 3.3 Going live
 
@@ -378,6 +380,7 @@ profile or on the command line (`--snake-case` → `--kebab-case`).
 | `rc_lookahead` | empty | Lower uses less memory; empty = x264 default. |
 | `keyframe_seconds` | 2.0 | Keyframe interval; most platforms want 2 s (1 s also speeds up the hand-back to the radio). |
 | `background_bitrate` | 4M | Bitrate of the pre-scaled background loop. |
+| `background_size` | 1280x720 | Resolution the background loop is decoded at, then scaled up under the overlay (the overlay stays sharp). Smaller uses less CPU; 1920x1080 for full detail. |
 | `audio_bitrate` | 160k | AAC bitrate (Mixcloud: 320k). |
 | `loudness_normalize` | true | Measure each track once and even out volume. |
 | `loudness_target` | -14.0 | Target loudness in LUFS; streaming platforms use about -14. |
@@ -401,11 +404,12 @@ MediaMTX settings (ports, passwords) are in `mediamtx/mediamtx.yml`. The switche
 | OBS: "Failed to connect to server" | Port 1935 open (`sudo ufw status`)? MediaMTX running (`switcher-status`)? Server address correct? |
 | OBS connects, then disconnects at once | Wrong stream key / password: `journalctl --user -u music-livestream-mediamtx` shows `authentication failed`. The key must start with `laptop?user=laptop_streamer&pass=`. |
 | OBS streams but Restream still shows the radio | Switcher log: OBS is probably HEVC/AV1 (`OBS stream keeps failing to relay`): choose an H.264 encoder. |
+| OBS video takes over but has no sound | In OBS, check that the audio meters move and that the active audio track is selected under **Output → Streaming** (usually Track 1). OBS sends only that track; local audio monitoring alone does not put sound in the stream. |
 | Takeover takes several seconds | OBS keyframe interval set to 0 (auto): set 1 s. |
 | `On air: offline clip` and silence, no OBS | The radio is not publishing: check `logs` and that `rtmp_url` is `rtmp://127.0.0.1:1935/radio`. |
 | MediaMTX does not start: `invalid 'alwaysAvailableFile'` | The offline clip is missing. Run `.venv/bin/python -m livestream.switcher --config config.json --prepare-offline-clip` (the service does it on start; check `background_video`). |
 | Restream shows nothing | Switcher log: `output_url` set? `Output encoder/reader exited` repeating means the destination refuses the connection (wrong key, or another device streaming with the same key). |
-| Stuttering, `No output frame for ...` | CPU too slow for two encoders: `video_preset` `superfast`/`ultrafast`, or a lower `video_size`/`video_fps`. Check with `top`. |
+| Stuttering, `No output frame for ...` | CPU too slow for two encoders: `video_preset` `superfast`/`ultrafast`, a lower `background_size`, or a lower `video_size`/`video_fps`. Check with `top`. |
 | Services stop when you log out | `sudo loginctl enable-linger $USER`. |
 
 Messages that are normal in the logs: `Relay from /laptop exited with code 255` when OBS stops,

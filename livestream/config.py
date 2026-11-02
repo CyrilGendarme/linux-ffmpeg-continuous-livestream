@@ -77,6 +77,9 @@ OPTIONS: List[Option] = [
            minimum=0.5, maximum=10),
     Option("background_bitrate", str, "4M", "Video", "Background cache bitrate", "Bitrate of the pre-scaled background loop.",
            pattern="bitrate"),
+    Option("background_size", str, "1280x720", "Video", "Background resolution",
+           "The background loop is decoded at this size, then scaled up under the overlay; smaller uses less CPU.",
+           pattern="size"),
     # -- Audio ----------------------------------------------------------------
     Option("audio_bitrate", str, "160k", "Audio", "Audio bitrate", "AAC bitrate, e.g. 160k (Mixcloud: 320k).", pattern="bitrate"),
     Option("loudness_normalize", bool, True, "Audio", "Normalize loudness", "Measure each track once and even out volume."),

@@ -62,13 +62,14 @@ def prepare_offline_clip(args) -> Path:
     """(Re)build the clip MediaMTX plays on /live when nothing is relayed: the radio background, silent."""
     background = prepare_background(args)
     stamp = OFFLINE_CLIP.with_name(OFFLINE_CLIP.name + ".source")
-    if OFFLINE_CLIP.exists() and stamp.exists() and stamp.read_text(encoding="utf-8") == background.name:
+    source = f"{background.name}|{args.video_size}"
+    if OFFLINE_CLIP.exists() and stamp.exists() and stamp.read_text(encoding="utf-8") == source:
         return OFFLINE_CLIP
     announce(f"Building offline clip {OFFLINE_CLIP}")
     partial = OFFLINE_CLIP.with_suffix(".partial.mp4")
-    subprocess.run(build_offline_clip_command(background, partial, args.video_fps), check=True)
+    subprocess.run(build_offline_clip_command(background, partial, args.video_fps, args.video_size), check=True)
     partial.replace(OFFLINE_CLIP)
-    stamp.write_text(background.name, encoding="utf-8")
+    stamp.write_text(source, encoding="utf-8")
     return OFFLINE_CLIP
 
 

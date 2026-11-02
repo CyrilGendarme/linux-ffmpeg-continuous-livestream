@@ -193,7 +193,7 @@ def check_encoder_speed(config_path: Optional[str]) -> str:
     from .runner import BackgroundFeed, OverlayFeed, prepare_background, start_encoder
 
     settings = parse_stream_args(["--config", config_path, "--rtmp-url", "-"])
-    background = BackgroundFeed(prepare_background(settings))
+    background = BackgroundFeed(prepare_background(settings), settings.background_size)
     overlay = OverlayFeed(settings.video_fps, 0.0, announce)
     overlay.renderer.on_track({"artist": "Self Test Artist", "title": "Self Test Title", "album": "Album", "year": "2026"}, None)
 

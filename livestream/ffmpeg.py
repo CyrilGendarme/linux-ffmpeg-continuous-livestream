@@ -52,13 +52,17 @@ def build_decoder_command(track: Path, gain_db: float = 0.0) -> List[str]:
 LAYOUT_SIZE = "1920x1080"  # overlay coordinates below are designed for this canvas
 
 
-def build_background_command(source: Path, output: Path, fps: float, bitrate: str) -> List[str]:
-    """Pre-scale the background loop once: layout size, output fps, no audio, moderate bitrate."""
+def build_background_command(source: Path, output: Path, fps: float, bitrate: str, size: str) -> List[str]:
+    """Pre-scale the background loop once: background size, output fps, no audio, moderate bitrate.
+
+    It is decoded and piped at this size and only scaled up to the layout in
+    the encoder: a smaller background saves decoding and ~3 MB per frame of piping.
+    """
     return [
         "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
         "-i", str(source),
         "-an",
-        "-vf", f"scale={LAYOUT_SIZE.replace('x', ':')},fps={fps:g},format=yuv420p",
+        "-vf", f"scale={size.replace('x', ':')},fps={fps:g},format=yuv420p",
         "-c:v", "libx264", "-preset", "medium", "-b:v", bitrate,
         "-movflags", "+faststart",
         str(output),
@@ -148,19 +152,21 @@ def build_ffmpeg_command(
 ) -> List[str]:
     """Long-running encoder.
 
-    Inputs: the background as raw yuv420p frames (pipe `background_fd`, from
-    livestream.runner.BackgroundFeed), the now-playing panel, the centre title
+    Inputs: the background as raw yuv420p frames at `background_size` (pipe
+    `background_fd`, from livestream.runner.BackgroundFeed), the now-playing panel, the centre title
     and the countdown as raw yuva420p frames (pipes `panel_fd`, `title_fd` and
     `countdown_fd`, from livestream.overlay), and raw PCM audio on stdin.
 
     `settings` provides video_bitrate, video_bufsize, video_fps, video_size,
     video_preset, encoder_threads, rc_lookahead, audio_bitrate,
-    keyframe_seconds and network_timeout (see config.OPTIONS).
+    keyframe_seconds, network_timeout and background_size (see config.OPTIONS).
     """
     fps = f"{settings.video_fps:g}"
     scale_out = "" if settings.video_size == LAYOUT_SIZE else f",scale={settings.video_size.replace('x', ':')}"
+    # Bilinear is plenty for a moving background under the overlay, and cheap.
+    scale_bg = "null" if settings.background_size == LAYOUT_SIZE else f"scale={LAYOUT_SIZE.replace('x', ':')}:flags=bilinear"
     video = (
-        "[0:v]null[bg];"
+        f"[0:v]{scale_bg}[bg];"
         f"[bg][2:v]overlay=0:{CENTER_Y}:format=yuv420[withtitle];"
         f"[withtitle][1:v]overlay={PANEL_X}:0:format=yuv420[withpanel];"
         f"[withpanel][3:v]overlay=0:{COUNTDOWN_Y}:format=yuv420"
@@ -189,7 +195,7 @@ def build_ffmpeg_command(
         "-pix_fmt",
         "yuv420p",
         "-video_size",
-        LAYOUT_SIZE,
+        settings.background_size,
         "-framerate",
         fps,
         "-i",
@@ -262,14 +268,18 @@ SWITCH_AUDIO_RATE = 48000
 SWITCH_AUDIO_CHANNELS = 2
 
 
-def build_offline_clip_command(background: Path, output: Path, fps: float, seconds: float = 10.0) -> List[str]:
-    """Clip MediaMTX loops on the live path while no source is relayed: the radio background, silent."""
+def build_offline_clip_command(background: Path, output: Path, fps: float, size: str, seconds: float = 10.0) -> List[str]:
+    """Clip MediaMTX loops on the live path while no source is relayed: the radio background, silent.
+
+    At `size` (the radio's video_size), so a cut between the radio and the clip keeps one resolution.
+    """
     return [
         "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
         "-stream_loop", "-1", "-i", str(background),
         "-f", "lavfi", "-i", f"anullsrc=r={SWITCH_AUDIO_RATE}:cl=stereo",
         "-t", f"{seconds:g}",
         "-map", "0:v:0", "-map", "1:a:0",
+        "-vf", f"scale={size.replace('x', ':')}",
         "-c:v", "libx264", "-preset", "medium", "-pix_fmt", "yuv420p", "-g", f"{2 * fps:g}",
         "-c:a", "aac", "-ar", str(SWITCH_AUDIO_RATE), "-ac", str(SWITCH_AUDIO_CHANNELS),
         "-movflags", "+faststart",

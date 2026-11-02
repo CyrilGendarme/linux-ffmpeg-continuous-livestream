@@ -14,7 +14,7 @@ from typing import Callable, Dict, Iterator, Optional, Tuple
 
 from .audio_feed import AudioFeeder
 from .config import LIVE_OPTIONS, OPTIONS_BY_NAME, load_config_file, menu_lines, option_value, parse_args
-from .ffmpeg import LAYOUT_SIZE, build_background_command, build_background_decoder_command, build_ffmpeg_command
+from .ffmpeg import build_background_command, build_background_decoder_command, build_ffmpeg_command
 from .loudness import LoudnessNormalizer
 from .media import extract_cover, extract_track_fields, ffprobe_json, find_audio_files, probe_duration_seconds
 from .overlay import OverlayRenderer
@@ -51,14 +51,15 @@ def prepare_background(argv, source: Optional[str] = None) -> Path:
         raise FileNotFoundError(f"Background video not found: {source}")
     stat = source.stat()
     key = hashlib.sha1(
-        f"{source.resolve()}|{stat.st_size}|{stat.st_mtime}|{argv.video_fps}|{argv.background_bitrate}".encode()
+        f"{source.resolve()}|{stat.st_size}|{stat.st_mtime}|{argv.video_fps}|{argv.background_bitrate}|{argv.background_size}".encode()
     ).hexdigest()[:12]
     background = cache_dir / f"background-{key}.mp4"
     if not background.exists():
         announce(f"Preparing background loop once (cached in {cache_dir})...")
         partial = background.with_suffix(".partial.mp4")
         subprocess.run(
-            build_background_command(source, partial, argv.video_fps, argv.background_bitrate), check=True
+            build_background_command(source, partial, argv.video_fps, argv.background_bitrate, argv.background_size),
+            check=True,
         )
         partial.replace(background)
     return background
@@ -186,8 +187,8 @@ class BackgroundFeed:
     never stop.
     """
 
-    def __init__(self, background: Path) -> None:
-        width, height = (int(value) for value in LAYOUT_SIZE.split("x"))
+    def __init__(self, background: Path, size: str) -> None:
+        width, height = (int(value) for value in size.split("x"))
         self.frame_size = width * height * 3 // 2  # yuv420p
         self.background = background
         self._pending: Optional[Path] = None
@@ -273,7 +274,7 @@ class LiveConfig:
         self.argv = argv
         self.overlay = overlay
         self.path = Path(argv.config) if argv.config else None
-        self.background = BackgroundFeed(prepare_background(argv))
+        self.background = BackgroundFeed(prepare_background(argv), argv.background_size)
         self._source = argv.background_video
         self._preparing: Optional[str] = None
         self._stamp = self._file_stamp()
