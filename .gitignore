@@ -11,3 +11,4 @@ config.json
 db.sqlite3
 mediamtx/offline.mp4*
 mediamtx/*.partial.mp4
+.radiofull/
