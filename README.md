@@ -411,6 +411,17 @@ class B cap is ever reached, the radio replays the tracks already on disk until 
 writes to the bucket; it logs a warning when the audio files exceed 9 GB of the 10 GB free storage. The counter
 only sees this server's requests: uploads from elsewhere count too, so keep an eye on the Cloudflare dashboard.
 
+To upload the local tracks that are not in the bucket yet (same settings, same monthly counter):
+
+```bash
+python3 r2_push.py --dry-run          # list what would be uploaded
+python3 r2_push.py                    # upload (music_dir from config.json, or --music-dir /path)
+```
+
+A track counts as pushed when the key `r2_prefix` + its path relative to `music_dir` exists. Existing objects
+are never overwritten and nothing is deleted. Each file is one `PutObject` (one class A operation), and the
+push skips any file that would take the bucket over 9 GB.
+
 MediaMTX settings (ports, passwords) are in `mediamtx/mediamtx.yml`. The switcher expects the defaults: RTMP
 1935, RTSP 8554, API 127.0.0.1:9997, and the paths `radio`, `laptop` and `live`.
 

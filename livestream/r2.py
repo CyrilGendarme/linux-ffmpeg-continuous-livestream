@@ -83,13 +83,21 @@ class OperationBudget:
 
     def can_spend(self, kind: str, count: int = 1) -> bool:
         with self._lock:
-            self._roll()
+            self._state = self._load()  # another process may have spent some
             return self._state[kind] + count <= self.caps[kind]
 
     def spend(self, kind: str) -> None:
-        """Record one request before sending it; raises when the cap is reached."""
-        with self._lock:
-            self._roll()
+        """Record one request before sending it; raises when the cap is reached.
+
+        The file is re-read under an exclusive lock, so the radio and the push
+        script can share one counter.
+        """
+        import fcntl
+
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self._lock, open(self.path.with_suffix(".lock"), "a") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            self._state = self._load()
             if self._state[kind] >= self.caps[kind]:
                 raise BudgetExceeded(f"R2 {kind.replace('_', ' ')} cap reached for {self._state['month']} "
                                      f"({self.caps[kind]} operations)")
@@ -139,19 +147,21 @@ class R2Library:
     # -- listing (class A) ----------------------------------------------------
 
     def list_tracks(self) -> List[RemoteTrack]:
+        """Audio objects under the prefix. Also sets `stored_bytes` (every object listed)."""
         tracks: List[RemoteTrack] = []
         token: Optional[str] = None
+        self.stored_bytes = 0
         while True:
             self.budget.spend("class_a")
+            # Whole bucket (filtered below), so stored_bytes covers every object.
             params = {"Bucket": self.bucket, "MaxKeys": 1000}
-            if self.prefix:
-                params["Prefix"] = self.prefix
             if token:
                 params["ContinuationToken"] = token
             page = self.client.list_objects_v2(**params)
             for item in page.get("Contents", []):
                 key = item["Key"]
-                if Path(key).suffix.lower() in SUPPORTED_AUDIO_EXTENSIONS and item["Size"] > 0:
+                self.stored_bytes += int(item["Size"])
+                if key.startswith(self.prefix) and Path(key).suffix.lower() in SUPPORTED_AUDIO_EXTENSIONS and item["Size"] > 0:
                     tracks.append(RemoteTrack(key, int(item["Size"]), item["LastModified"].timestamp()))
             if not page.get("IsTruncated"):
                 break
@@ -206,6 +216,18 @@ class R2Library:
         os.replace(partial, target)
         return target
 
+    # -- uploads (class A) ----------------------------------------------------
+
+    def upload(self, local: Path, key: str) -> None:
+        """Upload one file with a single PutObject (no multipart: 1 class A operation)."""
+        import mimetypes
+
+        self.budget.spend("class_a")
+        content_type = mimetypes.guess_type(local.name)[0] or "application/octet-stream"
+        with local.open("rb") as body:
+            self.client.put_object(Bucket=self.bucket, Key=key, Body=body,
+                                   ContentLength=local.stat().st_size, ContentType=content_type)
+
 
 class R2Preloader:
     """Shuffled R2 tracks as local paths; each file is fully downloaded before it plays."""
@@ -241,9 +263,9 @@ class R2Preloader:
         self._check_storage(self._listing)
 
     def _check_storage(self, tracks: List[RemoteTrack]) -> None:
-        total = sum(track.size for track in tracks)
+        total = getattr(self.library, "stored_bytes", 0) or sum(track.size for track in tracks)
         if total > STORAGE_WARNING_BYTES:
-            self.log(f"R2 WARNING: the audio files alone take {total / 1000**3:.2f} GB, "
+            self.log(f"R2 WARNING: the bucket holds {total / 1000**3:.2f} GB, "
                      f"close to the {FREE_STORAGE_BYTES / 1000**3:.0f} GB free storage")
 
     def _refresh_in_background(self) -> None:
@@ -378,17 +400,20 @@ class R2Preloader:
         self._downloads.put(None)
 
 
-def preloader_from_args(argv, log: Callable[[str], None]) -> R2Preloader:
-    missing = [name for name in ("r2_account_id", "r2_access_key_id", "r2_secret_access_key")
+def library_from_args(argv) -> R2Library:
+    missing = [name for name in ("r2_bucket", "r2_account_id", "r2_access_key_id", "r2_secret_access_key")
                if not getattr(argv, name)]
     if missing:
-        raise ValueError(f"r2_bucket is set but these settings are missing: {', '.join(missing)}")
+        raise ValueError(f"R2 settings missing: {', '.join(missing)}")
     cache_dir = Path(argv.cache_dir).expanduser()
     budget = OperationBudget(
         cache_dir / "r2-operations.json",
         int(FREE_CLASS_A * CAP_RATIO),
         int(FREE_CLASS_B * CAP_RATIO),
     )
-    library = R2Library(argv.r2_account_id, argv.r2_bucket, argv.r2_prefix or "", argv.r2_access_key_id,
-                        argv.r2_secret_access_key, cache_dir, budget)
-    return R2Preloader(library, log)
+    return R2Library(argv.r2_account_id, argv.r2_bucket, argv.r2_prefix or "", argv.r2_access_key_id,
+                     argv.r2_secret_access_key, cache_dir, budget)
+
+
+def preloader_from_args(argv, log: Callable[[str], None]) -> R2Preloader:
+    return R2Preloader(library_from_args(argv), log)
