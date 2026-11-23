@@ -19,6 +19,7 @@ from .loudness import LoudnessNormalizer
 from .media import extract_cover, extract_track_fields, ffprobe_json, find_audio_files, probe_duration_seconds
 from .overlay import OverlayRenderer
 from .prerender import Prerenderer
+from .r2 import preloader_from_args
 
 
 def announce(msg: str) -> None:
@@ -490,12 +491,34 @@ def main() -> int:
                 args.loudness_max_gain,
                 announce,
             )
+        def prepare_upcoming(track: Path) -> None:
+            if normalizer:
+                normalizer.prioritize(track)
+            overlay.upcoming(track)
+
+        if args.r2_bucket:
+            # Remote library: only the previous/current/next files are on disk, so
+            # there is no whole-library loudness scan; each track is measured
+            # (and its metadata read) once its download has completed.
+            preloader = preloader_from_args(args, announce)
+            preloader.initial_listing()
+            tracks = preloader.tracks_forever()
+            prepare = preloader.wait_ready
+
+            def on_upcoming(track: Path) -> None:
+                preloader.when_ready(track, lambda: prepare_upcoming(track))
+        else:
+            tracks = shuffled_forever(Path(args.music_dir), normalizer.scan_library if normalizer else lambda _tracks: None)
+            prepare = lambda _track: True  # noqa: E731
+            on_upcoming = prepare_upcoming
+
         feeder = AudioFeeder(
-            shuffled_forever(Path(args.music_dir), normalizer.scan_library if normalizer else lambda _tracks: None),
+            tracks,
             float(args.track_fade_seconds),
             announce,
             gain_for=normalizer.gain_db if normalizer else (lambda _track, _may_block: 0.0),
-            on_upcoming=lambda track: (normalizer.prioritize(track) if normalizer else None, overlay.upcoming(track)),
+            on_upcoming=on_upcoming,
+            prepare=prepare,
         )
 
         while True:

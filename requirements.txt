@@ -4,4 +4,5 @@ Werkzeug
 pyOpenSSL
 gunicorn>=21  # HTTPS server for the settings page
 Pillow>=10.0  # stream overlay rendering (needs raqm/libraqm for text shaping)
+boto3>=1.28  # Cloudflare R2 track storage (optional: only when r2_bucket is set)
 # FFmpeg and ffprobe must be installed on the host system.

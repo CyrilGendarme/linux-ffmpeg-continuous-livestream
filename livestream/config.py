@@ -49,8 +49,9 @@ class Option:
 
 OPTIONS: List[Option] = [
     # -- Stream ---------------------------------------------------------------
-    Option("music_dir", str, None, "Stream", "Music folder", "Folder scanned (recursively) for audio tracks.",
-           required=True, path="dir", profile_override=False),
+    Option("music_dir", str, None, "Stream", "Music folder",
+           "Folder scanned (recursively) for audio tracks. Not used when an R2 bucket is set.",
+           path="dir", profile_override=False),
     Option("background_video", str, None, "Stream", "Background video", "Looping MP4/WEBM shown behind the overlay.",
            required=True, path="file"),
     Option("rtmp_url", str, None, "Stream", "Destination URL", "RTMP(S) ingest URL including the stream key, "
@@ -102,6 +103,20 @@ OPTIONS: List[Option] = [
     Option("network_timeout", float, 10.0, "Stability", "Network timeout (s)", "RTMP read/write timeout.", minimum=1, maximum=300),
     Option("cache_dir", str, str(DEFAULT_CACHE_DIR), "Stability", "Cache folder", "Loudness cache and pre-rendered assets.",
            profile_override=False),
+    # -- Cloudflare R2 (tracks stored in a bucket instead of music_dir) ---------
+    Option("r2_bucket", str, None, "R2 storage", "R2 bucket",
+           "When set, tracks come from this Cloudflare R2 bucket instead of the music folder. The bucket is "
+           "listed at startup and each next track is fully downloaded while the current one plays.",
+           nullable=True, profile_override=False),
+    Option("r2_prefix", str, None, "R2 storage", "R2 folder (prefix)", "Only use objects under this prefix, e.g. music/.",
+           nullable=True, profile_override=False),
+    Option("r2_account_id", str, None, "R2 storage", "Cloudflare account ID",
+           "From the R2 page of the Cloudflare dashboard (endpoint https://<account id>.r2.cloudflarestorage.com).",
+           nullable=True, profile_override=False),
+    Option("r2_access_key_id", str, None, "R2 storage", "R2 access key ID",
+           "From an R2 API token; read-only access to the bucket is enough.", nullable=True, profile_override=False),
+    Option("r2_secret_access_key", str, None, "R2 storage", "R2 secret access key",
+           "Secret of the same R2 API token.", nullable=True, secret=True, profile_override=False),
     # -- Restream (stream title; used by the web app only) --------------------
     Option("restream_client_id", str, None, "Restream", "Restream app client ID",
            "From your app at developers.restream.io/apps, to change the stream title from the show page.",
@@ -212,6 +227,9 @@ def validate_config(data: Any, check_paths: bool = True, base_dir: Optional[Path
             errors[option.name] = error
         elif value is not None:
             clean[option.name] = value
+
+    if "music_dir" not in errors and not clean.get("music_dir") and not clean.get("r2_bucket"):
+        errors["music_dir"] = "is required (unless an R2 bucket is set)"
 
     for key in sorted(set(data) - set(OPTIONS_BY_NAME) - {"profile", "profiles"}):
         errors[key] = "unknown setting"
@@ -350,6 +368,8 @@ def parse_args(argv=None) -> argparse.Namespace:
         for option in OPTIONS
         if option.required and getattr(args, option.name) in (None, "")
     ]
+    if not args.music_dir and not args.r2_bucket:
+        missing.insert(0, "--music-dir (or --r2-bucket)")
     if missing:
         parser.error("Missing required values. Provide them via CLI or config JSON: " + ", ".join(missing))
 

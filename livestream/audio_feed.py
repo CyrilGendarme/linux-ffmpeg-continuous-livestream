@@ -83,8 +83,10 @@ class AudioFeeder:
         log: Callable[[str], None],
         gain_for: Callable[[Path, bool], float] = lambda _track, _may_block: 0.0,
         on_upcoming: Callable[[Path], None] = lambda _track: None,
+        prepare: Callable[[Path], bool] = lambda _track: True,
     ) -> None:
         self._tracks = tracks
+        self._prepare = prepare  # e.g. wait until a remote track is fully downloaded
         self._lookahead: Optional[Path] = None
         self._fade_frames = max(0, int(fade_seconds * PCM_SAMPLE_RATE))
         self._log = log
@@ -107,6 +109,9 @@ class AudioFeeder:
             track = self._next_track()
             if track is None:
                 return None
+            if not self._prepare(track):
+                self._log(f"Skipping unavailable track: {track}")
+                continue
             # Blocking is only acceptable before any audio has been sent.
             gain = self._gain_for(track, self.current_track is None)
             if gain:

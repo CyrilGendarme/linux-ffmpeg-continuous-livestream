@@ -365,7 +365,11 @@ profile or on the command line (`--snake-case` → `--kebab-case`).
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `music_dir` | required | Folder scanned (recursively) for audio tracks. |
+| `music_dir` | required* | Folder scanned (recursively) for audio tracks. *Not needed when `r2_bucket` is set. |
+| `r2_bucket` | empty | Take tracks from this Cloudflare R2 bucket instead of `music_dir` (see below). |
+| `r2_prefix` | empty | Only use objects under this prefix, e.g. `music/`. |
+| `r2_account_id` | empty | Cloudflare account ID (endpoint `https://<id>.r2.cloudflarestorage.com`). |
+| `r2_access_key_id` / `r2_secret_access_key` | empty | R2 API token; read-only on the bucket is enough. |
 | `background_video` | required | Looping MP4/WEBM shown behind the overlay (and, silent, while nothing is on air). |
 | `rtmp_url` | required | Where the **radio** streams. With the switcher: `rtmp://127.0.0.1:1935/radio`. |
 | `output_format` | flv | Container of the radio stream: flv for RTMP, mpegts for UDP/local preview. |
@@ -393,6 +397,19 @@ profile or on the command line (`--snake-case` → `--kebab-case`).
 | `cache_dir` | ~/.cache/music-livestream | Loudness cache and pre-rendered assets. |
 
 The video and audio settings apply both to the radio's own encoding and to the switcher's output encoding.
+
+**Tracks on Cloudflare R2.** With `r2_bucket` set (and `pip install -r requirements.txt` for boto3), the radio
+lists the bucket once at startup (saved to `cache_dir/r2-listing.json`, reused if R2 is unreachable at the next
+start) and refreshes that listing in the background once per shuffle pass. When a track starts, the next one is
+downloaded **in full** to `cache_dir/r2-tracks/`; only the previous, current and next files are kept on disk.
+Loudness and metadata are read from the local copy once it is complete.
+
+To stay inside the R2 free tier, every request is counted per month in `cache_dir/r2-operations.json` and R2
+is not called past 90% of the quota (900k class A, 9M class B): one class A request per 1000 objects per pass,
+one class B `GetObject` per track (no multipart, no automatic retries, nothing when the file is cached). If the
+class B cap is ever reached, the radio replays the tracks already on disk until the next month. The radio never
+writes to the bucket; it logs a warning when the audio files exceed 9 GB of the 10 GB free storage. The counter
+only sees this server's requests: uploads from elsewhere count too, so keep an eye on the Cloudflare dashboard.
 
 MediaMTX settings (ports, passwords) are in `mediamtx/mediamtx.yml`. The switcher expects the defaults: RTMP
 1935, RTSP 8554, API 127.0.0.1:9997, and the paths `radio`, `laptop` and `live`.
