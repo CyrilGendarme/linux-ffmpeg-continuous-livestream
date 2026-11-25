@@ -209,6 +209,19 @@ class ProgressWatchdog:
 STARTUP_GRACE_SECONDS = 30.0
 
 
+def exit_hint(exit_code: Optional[int], watchdog: "ProgressWatchdog") -> str:
+    """Generate a helpful message about why a process exited."""
+    if exit_code is None:
+        return ""
+    if exit_code == 0:
+        return ": normal exit"
+    if exit_code < 0:
+        return f": killed by signal {-exit_code}"
+    if not watchdog.started:
+        return f": failed to start (exit code {exit_code})"
+    return f": exit code {exit_code}"
+
+
 def run_cycle(feeder: AudioFeeder, overlay: OverlayFeed, background: Path, argv) -> bool:
     """Run one encoder process. Returns True when every track has been played."""
     announce(f"Starting FFmpeg stream to {argv.rtmp_url}")
