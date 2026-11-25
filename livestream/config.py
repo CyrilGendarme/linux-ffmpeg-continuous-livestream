@@ -52,8 +52,13 @@ OPTIONS: List[Option] = [
     Option("music_dir", str, None, "Stream", "Music folder",
            "Folder scanned (recursively) for audio tracks. Not used when an R2 bucket is set.",
            path="dir", profile_override=False),
-    Option("background_video", str, None, "Stream", "Background video", "Looping MP4/WEBM shown behind the overlay.",
-           required=True, path="file"),
+    Option("background_videos", str, None, "Stream", "Background videos", 
+           "Comma-separated list of looping MP4/WEBM videos shown behind the overlay. "
+           "They are preloaded in memory and switched on each track change with a fade-to-black transition.",
+           required=True),
+    Option("background_video", str, None, "Stream", "Background video (deprecated)", 
+           "DEPRECATED: Use background_videos instead. Single looping MP4/WEBM shown behind the overlay.",
+           path="file"),
     Option("rtmp_url", str, None, "Stream", "Destination URL", "RTMP(S) ingest URL including the stream key, "
            "e.g. rtmp://live.restream.io/live/KEY (or udp://... for local preview).", required=True, secret=True),
     Option("output_format", str, "flv", "Stream", "Container format", "flv for RTMP, mpegts for UDP/local preview.",
@@ -136,7 +141,14 @@ OPTIONS: List[Option] = [
 ]
 OPTIONS_BY_NAME: Dict[str, Option] = {option.name: option for option in OPTIONS}
 # Options the runner picks up from the config file while streaming.
-LIVE_OPTIONS = ("background_video", "menu_text", "countdown_enabled", "countdown_hour", "countdown_minute")
+LIVE_OPTIONS = ("background_videos", "background_video", "menu_text", "countdown_enabled", "countdown_hour", "countdown_minute")
+
+
+def _parse_background_videos(value: Optional[str]) -> List[str]:
+    """Parse background_videos from comma-separated string to list of paths."""
+    if not value or not isinstance(value, str):
+        return []
+    return [path.strip() for path in value.split(",") if path.strip()]
 
 
 def _to_bool(value) -> bool:
@@ -230,6 +242,15 @@ def validate_config(data: Any, check_paths: bool = True, base_dir: Optional[Path
 
     if "music_dir" not in errors and not clean.get("music_dir") and not clean.get("r2_bucket"):
         errors["music_dir"] = "is required (unless an R2 bucket is set)"
+
+    # Handle backward compatibility: background_video -> background_videos
+    if "background_videos" in errors or not clean.get("background_videos"):
+        if clean.get("background_video") and "background_video" not in errors:
+            clean["background_videos"] = clean["background_video"]
+            if "background_videos" in errors:
+                del errors["background_videos"]
+        elif not clean.get("background_videos"):
+            errors["background_videos"] = "is required (or background_video for backward compatibility)"
 
     for key in sorted(set(data) - set(OPTIONS_BY_NAME) - {"profile", "profiles"}):
         errors[key] = "unknown setting"
