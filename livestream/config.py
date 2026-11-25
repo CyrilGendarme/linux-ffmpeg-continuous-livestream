@@ -325,7 +325,7 @@ def load_config_file(path: Path, profile: Optional[str] = None) -> Tuple[dict, O
     Returns (settings with the profile applied, profile name). Raises ValueError.
     """
     try:
-        with Path(path).open("r", encoding="utf-8") as handle:
+        with Path(path).open("r", encoding="utf-8-sig") as handle:
             config = json.load(handle)
     except OSError as exc:
         raise ValueError(f"Config file not readable: {path}: {exc}") from exc
