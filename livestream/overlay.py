@@ -444,11 +444,8 @@ class NowPlayingPanel:
         info_y = y + 12
         title_lines = _wrap_runs(PANEL_TITLE, [("Now Playing", WHITE)], content_w)
         title_h = len(title_lines) * PANEL_TITLE.line_height
-        value_lines = {key: wrap(INFO_TEXT, self.fields[key].text, content_w) for key in FIELD_ORDER}
-        label_lines = {key: wrap(INFO_TEXT, FIELD_LABELS[key], content_w) for key in FIELD_ORDER}
-        item_heights = [
-            (len(label_lines[key]) + len(value_lines[key])) * INFO_TEXT.line_height for key in FIELD_ORDER
-        ]
+        item_lines = {key: wrap(INFO_TEXT, f"{FIELD_LABELS[key]} {self.fields[key].text}", content_w) for key in FIELD_ORDER}
+        item_heights = [len(item_lines[key]) * INFO_TEXT.line_height for key in FIELD_ORDER]
         content_base = 24 + sum(item_heights)
         info_base = 8 + title_h + content_base + 8
         cover_margin_top, cover_margin_bottom = 12, 24
@@ -466,7 +463,7 @@ class NowPlayingPanel:
         item_y = line_y + 12
         for key, item_h in zip(FIELD_ORDER, item_heights):
             text_y = item_y
-            for text in label_lines[key] + value_lines[key]:
+            for text in item_lines[key]:
                 draw_line(draw, INFO_TEXT, 12, text_y, text)
                 text_y += INFO_TEXT.line_height
             item_y += item_h + gap
