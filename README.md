@@ -1,45 +1,32 @@
-# Linux FFmpeg Continuous Livestream Radio
+# Radio livestream
 
-A Python-based music streaming radio with FFmpeg integration and optional background videos.
+Streams the tracks of a music folder (all subfolders are scanned) over looping background videos, with cover art and track titles.
 
-## Quick Start
+## Requirements
 
-### 1. Install Dependencies
-```bash
-pip install -r requirements.txt
-```
+- Linux, `python3`, `ffmpeg` + `ffprobe`
+- `pip install -r requirements.txt`
+- The MediaMTX binary at `mediamtx/mediamtx`
 
-### 2. Configure
-Create or edit `config.json`:
+## Configure
+
+Copy `config.example.json` to `config.json` and set at least:
+
 ```json
 {
-  "music_dir": "/path/to/music",
-  "background_videos": "video1.mp4, video2.mp4",
-  "rtmp_url": "rtmp://your-server/live/stream",
-  "ffmpeg_binary": "ffmpeg"
+  "music_dir": "/home/user/radio_music/",
+  "background_videos": "videos/loop 1.mp4, videos/loop 2.mp4",
+  "rtmp_url": "rtmp://127.0.0.1:1935/radio",
+  "output_url": "rtmp://live.restream.io/live/YOUR_KEY"
 }
 ```
 
-### 3. Launch
+`background_videos` is a comma-separated list (or a JSON list). The videos are prepared once at startup; on each track change the picture fades to black and the next video fades in. A single `background_video` also works.
+
+## Run
+
 ```bash
-python music_livestream.py --config config.json
+./radiofull-headless.sh          # start (add: stop | restart | status | logs radio)
 ```
 
-## Configuration Options
-
-- **music_dir**: Path to music directory (recursive scan enabled)
-- **background_videos**: Comma-separated video file paths (optional, fades to black between videos)
-- **rtmp_url**: RTMP stream URL
-- **ffmpeg_binary**: Path to FFmpeg executable
-- **port**: Control API port (default: 5000)
-
-## Notes
-
-- Music files are scanned recursively from all subdirectories
-- Cover art is automatically detected and loaded with tracks
-- Videos preload at startup and cycle on each track change
-- Use `radiofull.sh` or `radiofull-windows.sh` to start the full stack
-
-## Stop
-
-Press `Ctrl+C` or use the control API endpoint.
+Logs are in `logs/`.

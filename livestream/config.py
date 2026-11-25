@@ -52,12 +52,11 @@ OPTIONS: List[Option] = [
     Option("music_dir", str, None, "Stream", "Music folder",
            "Folder scanned (recursively) for audio tracks. Not used when an R2 bucket is set.",
            path="dir", profile_override=False),
-    Option("background_videos", str, None, "Stream", "Background videos", 
-           "Comma-separated list of looping MP4/WEBM videos shown behind the overlay. "
-           "They are preloaded in memory and switched on each track change with a fade-to-black transition.",
-           required=True),
-    Option("background_video", str, None, "Stream", "Background video (deprecated)", 
-           "DEPRECATED: Use background_videos instead. Single looping MP4/WEBM shown behind the overlay.",
+    Option("background_videos", str, None, "Stream", "Background videos",
+           "Looping MP4/WEBM videos shown behind the overlay, as a comma-separated list (or a JSON list). All are "
+           "prepared at startup; each track change fades the current video to black, then the next one in."),
+    Option("background_video", str, None, "Stream", "Background video",
+           "A single looping MP4/WEBM shown behind the overlay; used when background_videos is empty.",
            path="file"),
     Option("rtmp_url", str, None, "Stream", "Destination URL", "RTMP(S) ingest URL including the stream key, "
            "e.g. rtmp://live.restream.io/live/KEY (or udp://... for local preview).", required=True, secret=True),
@@ -144,11 +143,25 @@ OPTIONS_BY_NAME: Dict[str, Option] = {option.name: option for option in OPTIONS}
 LIVE_OPTIONS = ("background_videos", "background_video", "menu_text", "countdown_enabled", "countdown_hour", "countdown_minute")
 
 
-def _parse_background_videos(value: Optional[str]) -> List[str]:
-    """Parse background_videos from comma-separated string to list of paths."""
-    if not value or not isinstance(value, str):
+def _flatten_list(value: Any) -> Any:
+    """A JSON list becomes the comma-separated string the options use."""
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(item).strip() for item in value if str(item).strip())
+    return value
+
+
+def parse_background_videos(value: Optional[str]) -> List[str]:
+    """The paths of a comma-separated background_videos value."""
+    if not value:
         return []
-    return [path.strip() for path in value.split(",") if path.strip()]
+    return [path.strip() for path in str(_flatten_list(value)).split(",") if path.strip()]
+
+
+def background_sources(settings: Any) -> List[str]:
+    """The background videos to play, in order: background_videos, else the single background_video."""
+    sources = parse_background_videos(getattr(settings, "background_videos", None))
+    single = getattr(settings, "background_video", None)
+    return sources or ([single] if single else [])
 
 
 def _to_bool(value) -> bool:
@@ -162,6 +175,8 @@ def _to_bool(value) -> bool:
 
 def _validate_value(option: Option, value: Any, check_paths: bool) -> Tuple[Any, Optional[str]]:
     """Return (normalized value, error message or None)."""
+    if option.name == "background_videos":
+        value = _flatten_list(value)
     if value is None or (isinstance(value, str) and value.strip() == ""):
         if option.required:
             return None, "is required"
@@ -230,6 +245,13 @@ def validate_config(data: Any, check_paths: bool = True, base_dir: Optional[Path
             if base_dir is not None and not resolved.is_absolute():
                 resolved = base_dir / resolved
             _ignored, error = _validate_value(option, str(resolved), True)
+        if error is None and check_paths and option.name == "background_videos" and value:
+            for entry in parse_background_videos(value):
+                resolved = Path(entry).expanduser()
+                if base_dir is not None and not resolved.is_absolute():
+                    resolved = base_dir / resolved
+                if not resolved.is_file():
+                    return value, f"file does not exist on the server: {entry}"
         return value, error
 
     clean: Dict[str, Any] = {}
@@ -243,14 +265,10 @@ def validate_config(data: Any, check_paths: bool = True, base_dir: Optional[Path
     if "music_dir" not in errors and not clean.get("music_dir") and not clean.get("r2_bucket"):
         errors["music_dir"] = "is required (unless an R2 bucket is set)"
 
-    # Handle backward compatibility: background_video -> background_videos
-    if "background_videos" in errors or not clean.get("background_videos"):
-        if clean.get("background_video") and "background_video" not in errors:
-            clean["background_videos"] = clean["background_video"]
-            if "background_videos" in errors:
-                del errors["background_videos"]
-        elif not clean.get("background_videos"):
-            errors["background_videos"] = "is required (or background_video for backward compatibility)"
+    if not errors.get("background_videos") and not errors.get("background_video") and not (
+        clean.get("background_videos") or clean.get("background_video")
+    ):
+        errors["background_videos"] = "is required (or background_video for a single video)"
 
     for key in sorted(set(data) - set(OPTIONS_BY_NAME) - {"profile", "profiles"}):
         errors[key] = "unknown setting"
@@ -345,6 +363,8 @@ def load_config_file(path: Path, profile: Optional[str] = None) -> Tuple[dict, O
 def option_value(option: Option, config: dict) -> Any:
     """The value of `option` in a (profile-applied) config, or its default."""
     value = config.get(option.name)
+    if option.name == "background_videos":
+        value = _flatten_list(value)
     if value is None or value == "":
         return option.default
     if option.kind is bool:
@@ -391,6 +411,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     ]
     if not args.music_dir and not args.r2_bucket:
         missing.insert(0, "--music-dir (or --r2-bucket)")
+    if not background_sources(args):
+        missing.append("--background-videos (or --background-video)")
     if missing:
         parser.error("Missing required values. Provide them via CLI or config JSON: " + ", ".join(missing))
 
