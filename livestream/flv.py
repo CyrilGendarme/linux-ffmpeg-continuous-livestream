@@ -10,12 +10,17 @@ jump becomes a frozen frame plus silence, and the stream runs ever further
 ahead of real time. Such a jump is closed up: the stream continues right
 after the last tag sent, or at the wall clock if real time has passed.
 Audio and video share one offset, so lip sync is kept.
+
+retime also reports, through `log(kind, message)`, each discontinuity it
+closes ("input-jump": how much source time is missing, how long the output
+pauses) and each wait for input longer than INPUT_GAP_SECONDS ("input-gap").
 """
 
 import time
 from typing import BinaryIO, Callable, Dict, Tuple
 
 JUMP_MS = 300  # larger steps within one track are discontinuities (frames are 20-40 ms apart)
+INPUT_GAP_SECONDS = 2.0
 FLV_HEADER_SIZE = 9 + 4  # file header + the first PreviousTagSize
 TAG_HEADER_SIZE = 11
 AUDIO, VIDEO, SCRIPT = 8, 9, 18
@@ -57,14 +62,18 @@ def from_keyframe(source: BinaryIO, sink: BinaryIO) -> None:
         sink.flush()
 
 
-def retime(source: BinaryIO, sink: BinaryIO, log: Callable[[str], None]) -> None:
+def retime(source: BinaryIO, sink: BinaryIO, log: Callable[[str, str], None]) -> None:
     """Copy FLV tags from `source` to `sink` with corrected timestamps, until either side closes."""
     sink.write(read_exact(source, FLV_HEADER_SIZE))
     start = time.monotonic()
     offset = None
     last_out: Dict[int, int] = {}  # per tag type
     while True:
+        waiting = time.monotonic()
         header, body = read_tag(source)
+        waited = time.monotonic() - waiting
+        if waited > INPUT_GAP_SECONDS:
+            log("input-gap", f"no data from the live path for {waited:.1f}s (the relayed source stalled)")
         kind = header[0] & 0x1F
         timestamp = int.from_bytes(header[4:7], "big") | header[7] << 24
 
@@ -72,8 +81,12 @@ def retime(source: BinaryIO, sink: BinaryIO, log: Callable[[str], None]) -> None
         if offset is None or (previous is not None and abs(timestamp + offset - previous) > JUMP_MS):
             wall = int((time.monotonic() - start) * 1000)
             anchor = max([wall, *last_out.values()])
-            if offset is not None and abs(timestamp + offset - anchor) > JUMP_MS:
-                log(f"Closed a {timestamp + offset - anchor:+d} ms timestamp jump")
+            if offset is not None:
+                skipped = timestamp + offset - previous
+                meaning = ("source content missing, dropped upstream" if skipped > 0
+                           else "the source clock went back, nothing lost")
+                log("input-jump", f"live path timestamps jumped {skipped:+d} ms ({meaning}); "
+                    f"output resumes {anchor - max(last_out.values()):d} ms after its last packet")
             offset = anchor - timestamp
         out = timestamp + offset
         last_out[kind] = out

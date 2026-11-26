@@ -37,7 +37,9 @@ from .ffmpeg import (
     build_relay_publisher_command,
     build_relay_reader_command,
 )
+from . import health
 from .flv import from_keyframe, retime
+from .health import warning
 from .runner import STARTUP_GRACE_SECONDS, ProgressWatchdog, ensure_dependencies, exit_hint, prepare_background
 
 OFFLINE_CLIP = REPO_ROOT / "mediamtx" / "offline.mp4"  # alwaysAvailableFile in mediamtx.yml
@@ -52,6 +54,8 @@ POLL_SECONDS = 0.5
 HANDOVER_SECONDS = 5.0  # the previous relay keeps publishing until the new one has run this long
 RELAY_RETRY_SECONDS = 2.0
 OBS_MAX_FAILURES = 3  # quick OBS relay failures before OBS is ignored until it reconnects
+SWITCH_SETTLE_SECONDS = 10.0  # timestamp jumps and gaps this soon after a source change are expected
+NAMES = {OBS_PATH: "OBS", RADIO_PATH: "radio", None: "offline clip"}
 
 
 def announce(msg: str) -> None:
@@ -196,17 +200,31 @@ class OutputEncoder:
         self.process: Optional[subprocess.Popen] = None
         self.watchdog: Optional[ProgressWatchdog] = None
         self.retry_at = 0.0
+        self.on_air: Optional[str] = None  # kept up to date by run(), for incident reports
+        self.switched_at = 0.0
+
+    def incident(self, kind: str, message: str) -> None:
+        if kind.startswith("input-") and time.monotonic() - self.switched_at < SWITCH_SETTLE_SECONDS:
+            announce(f"{message} (source change)")  # MediaMTX moves timestamps ahead on each new publisher
+            return
+        name = kind if kind.startswith("input-") else f"output-{kind}"
+        announce(warning(name, f"{message} (on air: {NAMES[self.on_air]})"))
 
     def check(self, now: float) -> None:
         if self.process is not None:
             if self.process.poll() is not None or self.reader.poll() is not None:
-                announce(f"Output encoder/reader exited ({self.process.poll()}/{self.reader.poll()})"
-                         f"{exit_hint(self.process.poll(), self.watchdog)}; restarting in {self.args.restart_delay}s")
+                self.incident("restart", f"output encoder/reader exited ({self.process.poll()}/{self.reader.poll()})"
+                              f"{exit_hint(self.process.poll(), self.watchdog)}; restarting in "
+                              f"{self.args.restart_delay}s, viewers skip ahead by the time this takes")
             else:
+                for kind, message in self.watchdog.incidents():
+                    self.incident(kind, message)
                 limit = self.args.stall_timeout + (0 if self.watchdog.started else STARTUP_GRACE_SECONDS)
                 if self.watchdog.seconds_since_progress() <= limit:
                     return
-                announce(f"No output frame for {self.watchdog.seconds_since_progress():.0f}s; restarting the output encoder")
+                self.incident("restart", f"no output frame for {self.watchdog.seconds_since_progress():.0f}s "
+                              "(upload to the destination blocked, or CPU starved); restarting the output encoder, "
+                              "viewers skip ahead by the time this takes")
             self.stop()
             self.process = None
             self.retry_at = now + float(self.args.restart_delay)
@@ -222,15 +240,14 @@ class OutputEncoder:
             self.process = subprocess.Popen(
                 build_output_command(url, output_format, self.args), stdin=subprocess.PIPE, stdout=subprocess.PIPE
             )
-            self.watchdog = ProgressWatchdog(self.process)
+            self.watchdog = ProgressWatchdog(self.process, self.args.video_fps)
             threading.Thread(
                 target=self._pump, args=(self.reader, self.process), name="retime", daemon=True
             ).start()
 
-    @staticmethod
-    def _pump(reader: subprocess.Popen, encoder: subprocess.Popen) -> None:
+    def _pump(self, reader: subprocess.Popen, encoder: subprocess.Popen) -> None:
         try:
-            retime(reader.stdout, encoder.stdin, announce)
+            retime(reader.stdout, encoder.stdin, self.incident)
         except (EOFError, BrokenPipeError, ValueError, OSError):
             pass  # one side went away; check() restarts both
         finally:
@@ -279,7 +296,8 @@ def run(args) -> None:
                 continue
 
             if relay is not None and not relay.alive and relay.age(now) >= RELAY_RETRY_SECONDS:
-                announce(f"Relay from /{relay.source} exited with code {relay.returncode}")
+                announce(warning("relay-exit", f"relay from /{relay.source} exited with code {relay.returncode} "
+                                 f"after {relay.age(now):.0f}s; restarting it"))
                 if relay.source == OBS_PATH and relay.age(now) < 10:
                     obs.relay_failed(obs_info)
                 relay = None  # restarted below if its source is still wanted
@@ -291,12 +309,17 @@ def run(args) -> None:
 
             if wanted != on_air or (wanted and relay is None):
                 if wanted != on_air:
-                    names = {OBS_PATH: "OBS", RADIO_PATH: "radio", None: "offline clip"}
-                    announce(f"On air: {names[wanted]} (was {names[on_air]})")
+                    message = f"On air: {NAMES[wanted]} (was {NAMES[on_air]})"
+                    if wanted is None and on_air is not None:
+                        # Not a choice: the source that was on air stopped publishing.
+                        message = warning("radio-lost", f"{message}: the radio is no longer publishing to "
+                                          f"/{RADIO_PATH} (see the radio log for why)")
+                    announce(message)
                 if relay is not None:
                     retiring.append(relay)  # the new relay replaces it on /live as soon as it publishes
                 relay = Relay(wanted, args.network_timeout) if wanted else None
                 on_air = wanted
+                output.on_air, output.switched_at = wanted, now
 
             for old in list(retiring):
                 if not old.alive or relay is None or (relay.alive and relay.age(now) > HANDOVER_SECONDS):
@@ -325,6 +348,7 @@ def main() -> int:
     signal.signal(signal.SIGTERM, handle_shutdown)
     try:
         ensure_dependencies()
+        health.start()
         prepare_offline_clip(args)
         if options.prepare_offline_clip:
             return 0

@@ -8,12 +8,15 @@ import subprocess
 import threading
 import time
 import sys
+from collections import deque
 from pathlib import Path
 from typing import Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from .audio_feed import AudioFeeder
+from . import health
 from .config import LIVE_OPTIONS, OPTIONS_BY_NAME, background_sources, load_config_file, menu_lines, option_value, parse_args
-from .ffmpeg import build_background_command, build_background_decoder_command, build_ffmpeg_command
+from .ffmpeg import PCM_SAMPLE_RATE, build_background_command, build_background_decoder_command, build_ffmpeg_command
+from .health import clock, warning
 from .loudness import LoudnessNormalizer
 from .media import extract_cover, extract_track_fields, ffprobe_json, find_audio_files, probe_duration_seconds
 from .overlay import OverlayRenderer
@@ -416,12 +419,30 @@ class LiveConfig:
         threading.Thread(target=prepare, name="background-prepare", daemon=True).start()
 
 
-class ProgressWatchdog:
-    """Reads FFmpeg's -progress output and reports how long since the last new frame."""
+FREEZE_WARN_SECONDS = 2.0  # no new frame for this long is reported as a freeze
+SLOW_WINDOW_SECONDS = 10.0
+SLOW_RATIO = 0.95  # below this share of the frame rate over SLOW_WINDOW_SECONDS, the stream falls behind
+SLOW_GRACE_SECONDS = 30.0  # an encoder warms up below real time for a few seconds after it starts
 
-    def __init__(self, process: subprocess.Popen) -> None:
+
+class ProgressWatchdog:
+    """Reads FFmpeg's -progress output: time since the last new frame, output time, and incidents.
+
+    incidents() reports freezes (no new frame for FREEZE_WARN_SECONDS, then
+    their total length once frames flow again) and, given the expected `fps`,
+    stretches where the encoder runs slower than real time.
+    """
+
+    def __init__(self, process: subprocess.Popen, fps: Optional[float] = None) -> None:
         self.last_frame = -1
         self.last_change = time.monotonic()
+        self.out_seconds = 0.0  # media time written so far
+        self.fps = fps
+        self._history: "deque[Tuple[float, int]]" = deque()  # (monotonic, frame) per progress report
+        self._first_frame_at: Optional[float] = None
+        self._frozen_since: Optional[float] = None
+        self._slow_since: Optional[float] = None
+        self._slowest = 0.0
         threading.Thread(target=self._read, args=(process,), name="progress", daemon=True).start()
 
     def _read(self, process: subprocess.Popen) -> None:
@@ -431,9 +452,20 @@ class ProgressWatchdog:
                     frame = int(line[6:])
                 except ValueError:
                     continue
+                now = time.monotonic()
                 if frame > self.last_frame:
                     self.last_frame = frame
-                    self.last_change = time.monotonic()
+                    self.last_change = now
+                    if self._first_frame_at is None and frame > 0:
+                        self._first_frame_at = now
+                self._history.append((now, frame))
+                while self._history and self._history[0][0] < now - SLOW_WINDOW_SECONDS:
+                    self._history.popleft()
+            elif line.startswith(b"out_time_us="):
+                try:
+                    self.out_seconds = int(line[12:]) / 1_000_000
+                except ValueError:
+                    pass  # N/A before the first packet
 
     @property
     def started(self) -> bool:
@@ -441,6 +473,36 @@ class ProgressWatchdog:
 
     def seconds_since_progress(self) -> float:
         return time.monotonic() - self.last_change
+
+    def incidents(self) -> List[Tuple[str, str]]:
+        """(kind, message) for each freeze or slow stretch that began or ended since the last call."""
+        found = []
+        if not self.started:
+            return found
+        stalled = self.seconds_since_progress()
+        if self._frozen_since is None and stalled > FREEZE_WARN_SECONDS:
+            self._frozen_since = self.last_change
+            found.append(("freeze", f"no new video frame for {stalled:.1f}s (frame {self.last_frame})"))
+        elif self._frozen_since is not None and stalled <= FREEZE_WARN_SECONDS:
+            found.append(("freeze-end", f"frames flow again after a {self.last_change - self._frozen_since:.1f}s freeze"))
+            self._frozen_since = None
+            self._history.clear()  # the freeze must not also count as a slow stretch
+        warmed_up = self._first_frame_at is not None and time.monotonic() - self._first_frame_at > SLOW_GRACE_SECONDS
+        if self.fps and warmed_up and self._frozen_since is None and len(self._history) >= 2:
+            (first_time, first_frame), (last_time, last_frame) = self._history[0], self._history[-1]
+            if last_time - first_time >= SLOW_WINDOW_SECONDS * 0.8:
+                rate = (last_frame - first_frame) / (last_time - first_time)
+                if rate < self.fps * SLOW_RATIO:
+                    if self._slow_since is None:
+                        self._slow_since, self._slowest = first_time, rate
+                        found.append(("slow", f"{rate:.1f} fps over the last {last_time - first_time:.0f}s "
+                                      f"({100 * rate / self.fps:.0f}% of real time): falling behind"))
+                    self._slowest = min(self._slowest, rate)
+                elif self._slow_since is not None:
+                    found.append(("slow-end", f"back to real time after {last_time - self._slow_since:.0f}s "
+                                  f"(lowest {self._slowest:.1f} of {self.fps:g} fps)"))
+                    self._slow_since = None
+        return found
 
 
 STARTUP_GRACE_SECONDS = 30.0
@@ -460,7 +522,9 @@ def run_cycle(feeder: AudioFeeder, overlay: OverlayFeed, live: LiveConfig, argv)
     """Run one encoder process. Returns True when every track has been played."""
     announce("Starting FFmpeg stream")
     process, background_fd, overlay_fds = start_encoder(argv.rtmp_url, argv.output_format, argv)
-    watchdog = ProgressWatchdog(process)
+    watchdog = ProgressWatchdog(process, argv.video_fps)
+    written_at_start = feeder.frames_written
+    failure: Optional[BaseException] = None
 
     started: "queue.Queue[Path]" = queue.Queue()
     stop = threading.Event()
@@ -506,6 +570,8 @@ def run_cycle(feeder: AudioFeeder, overlay: OverlayFeed, live: LiveConfig, argv)
 
     try:
         while process.poll() is None:
+            for kind, message in watchdog.incidents():
+                announce(warning(f"radio-{kind}", message))
             check_health()
             live.poll()
             try:
@@ -522,6 +588,9 @@ def run_cycle(feeder: AudioFeeder, overlay: OverlayFeed, live: LiveConfig, argv)
             live.background.track_changed(track)
             announce(f"Now playing: {fields['center']}")
         raise RuntimeError(f"FFmpeg exited with code {process.returncode}{exit_hint(process.returncode, watchdog)}")
+    except Exception as exc:
+        failure = exc
+        raise
     finally:
         stop.set()
         if process.poll() is None:
@@ -533,6 +602,25 @@ def run_cycle(feeder: AudioFeeder, overlay: OverlayFeed, live: LiveConfig, argv)
                 process.wait(timeout=10)
         for thread in threads:
             thread.join(timeout=5)
+        if failure is not None:
+            sent = (feeder.frames_written - written_at_start) / PCM_SAMPLE_RATE
+            announce(warning("radio-restart", f"{failure}. {describe_audio_loss(feeder, sent - watchdog.out_seconds)}"))
+            failure.reported = True
+
+
+def describe_audio_loss(feeder: AudioFeeder, lost: float) -> str:
+    """What listeners miss when an encoder dies with `lost` seconds of audio still queued inside it.
+
+    The feeder resumes right after the last chunk it wrote, so that queued audio is skipped.
+    """
+    track = feeder.current_track
+    if track is None or lost < 0.2:
+        return "No audio lost."
+    position = feeder.track_frames_written / PCM_SAMPLE_RATE  # where the track resumes
+    if lost <= position:
+        return f"~{lost:.1f}s of audio lost: {track.name} jumps from {clock(position - lost)} to {clock(position)}."
+    previous = f"the last {lost - position:.1f}s of {feeder.previous_track.name} and " if feeder.previous_track else ""
+    return f"~{lost:.1f}s of audio lost: {previous}the first {clock(position)} of {track.name} (track cut)."
 
 
 def handle_shutdown(signum, frame) -> None:
@@ -548,6 +636,7 @@ def main() -> int:
     overlay: Optional[OverlayFeed] = None
     try:
         ensure_dependencies()
+        health.start()
         if args.profile:
             announce(f"Using profile: {args.profile}")
         overlay = OverlayFeed(args.video_fps, float(args.track_fade_seconds), announce)
@@ -600,7 +689,9 @@ def main() -> int:
                 announce("Shutting down cleanly.")
                 break
             except Exception as exc:
-                announce(f"Stream cycle failed: {exc}; restarting in {args.restart_delay}s")
+                if not getattr(exc, "reported", False):
+                    announce(warning("radio-restart", str(exc)))
+                announce(f"Restarting the radio encoder in {args.restart_delay}s")
                 time.sleep(float(args.restart_delay))
     except KeyboardInterrupt:
         announce("Shutting down cleanly.")

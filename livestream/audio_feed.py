@@ -10,14 +10,24 @@ stall), feeding resumes from the exact position in the current track.
 
 import subprocess
 import threading
+import time
 from array import array
 from pathlib import Path
 from typing import BinaryIO, Callable, Iterator, Optional, Union
 
 from .ffmpeg import PCM_CHANNELS, PCM_SAMPLE_RATE, build_decoder_command
+from .health import clock, warning
+from .media import ffprobe_json, probe_duration_seconds
 
 SAMPLE_BYTES = 4  # f32le
 CHUNK_FRAMES = 4800  # 100 ms
+# A track that decodes this much shorter than its probed duration was cut short
+# (both conditions: VBR files without a header often have a slightly wrong duration).
+EARLY_END_SECONDS = 3.0
+EARLY_END_RATIO = 0.97
+# The encoder holds a few seconds of audio (ffmpeg.AUDIO_QUEUE_SIZE); opening the
+# next track slower than this eats into it, and past it the stream freezes.
+SLOW_OPEN_SECONDS = 2.0
 
 
 class TrackDecoder:
@@ -28,6 +38,16 @@ class TrackDecoder:
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
         )
+        self.frames_read = 0
+        self.expected_seconds: Optional[float] = None  # probed in the background, for the early-end check
+        self._probing = threading.Thread(target=self._probe, name="track-probe", daemon=True)
+        self._probing.start()
+
+    def _probe(self) -> None:
+        try:
+            self.expected_seconds = probe_duration_seconds(ffprobe_json(self.track), self.track)
+        except (OSError, ValueError, subprocess.CalledProcessError):
+            pass
 
     def read(self, frames: int) -> array:
         """Read up to `frames` stereo frames; returns fewer only at end of track."""
@@ -41,7 +61,24 @@ class TrackDecoder:
         usable = len(data) - len(data) % (PCM_CHANNELS * SAMPLE_BYTES)
         samples = array("f")
         samples.frombytes(bytes(data[:usable]))
+        self.frames_read += len(samples) // PCM_CHANNELS
         return samples
+
+    def ended_early(self) -> Optional[str]:
+        """After the last read: why the track stopped before its end, or None if it played in full."""
+        try:
+            code = self.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            code = None
+        self._probing.join(timeout=5)
+        decoded = self.frames_read / PCM_SAMPLE_RATE
+        expected = self.expected_seconds
+        length = f"decoded {clock(decoded)}" + (f" of {clock(expected)}" if expected else "")
+        if code:
+            return f"decoder exited with code {code} ({length}; its error is in the log just above)"
+        if expected and expected - decoded > EARLY_END_SECONDS and decoded < expected * EARLY_END_RATIO:
+            return f"{length}: the file is truncated or damaged (or its duration tag is wrong)"
+        return None
 
     def close(self) -> None:
         if self.process.poll() is None:
@@ -95,6 +132,9 @@ class AudioFeeder:
         self._chunks = self._generate()
         self._pending: Optional[bytes] = None
         self.current_track: Optional[Path] = None
+        self.previous_track: Optional[Path] = None
+        self.frames_written = 0  # every audio frame written to an encoder, for incident reports
+        self.track_frames_written = 0  # of current_track: where it resumes after an encoder restart
 
     def _next_track(self) -> Optional[Path]:
         track = self._lookahead if self._lookahead is not None else next(self._tracks, None)
@@ -110,7 +150,7 @@ class AudioFeeder:
             if track is None:
                 return None
             if not self._prepare(track):
-                self._log(f"Skipping unavailable track: {track}")
+                self._log(warning("track-skipped", f"{track.name} is unavailable (see the download error above)"))
                 continue
             # Blocking is only acceptable before any audio has been sent.
             gain = self._gain_for(track, self.current_track is None)
@@ -121,7 +161,7 @@ class AudioFeeder:
             if head:
                 return decoder, head
             decoder.close()
-            self._log(f"Skipping unreadable track: {track}")
+            self._log(warning("track-skipped", f"{track.name} is unreadable (no audio decoded)"))
 
     def _generate(self) -> Iterator[Union[bytes, Path]]:
         """Yield PCM byte chunks, and a Path at the moment each track becomes audible."""
@@ -145,8 +185,16 @@ class AudioFeeder:
                     continue
 
                 # Current track finished: `held` is its last fade_seconds.
+                reason = current.ended_early()
+                if reason:
+                    self._log(warning("track-cut", f"{current.track.name} ended early: {reason}"))
                 current.close()
+                opening = time.monotonic()
                 opened = self._open_next()
+                waited = time.monotonic() - opening
+                if waited > SLOW_OPEN_SECONDS:
+                    self._log(warning("slow-next-track", f"the next track took {waited:.1f}s to open "
+                                      "(download or disk); the radio may have frozen meanwhile"))
                 if opened is None:
                     _apply_gain_ramp(held, 1.0, 0.0)
                     yield held.tobytes()
@@ -180,11 +228,15 @@ class AudioFeeder:
                     sink.flush()
                     return True
                 if isinstance(item, Path):
-                    self.current_track = item
+                    self.previous_track, self.current_track = self.current_track, item
+                    self.track_frames_written = 0
                     on_track_start(item)
                     continue
                 self._pending = item
             sink.write(self._pending)
+            frames = len(self._pending) // (PCM_CHANNELS * SAMPLE_BYTES)
+            self.frames_written += frames
+            self.track_frames_written += frames
             self._pending = None
         return False
 
