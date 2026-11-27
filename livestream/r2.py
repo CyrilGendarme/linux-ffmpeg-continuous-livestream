@@ -123,11 +123,16 @@ class RemoteTrack:
     modified: float  # unix time
 
 
+def is_r2_endpoint(endpoint: Optional[str]) -> bool:
+    """No endpoint (built from the account ID) or an explicit R2 one, e.g. an EU-jurisdiction bucket's."""
+    return not endpoint or bool(re.match(r"https?://[^/]+\.r2\.cloudflarestorage\.com(/|$)", endpoint))
+
+
 def s3_region(endpoint: Optional[str], region: Optional[str]) -> str:
     """The signing region: as configured, else read from an AWS endpoint, else auto (R2) or us-east-1."""
     if region:
         return region
-    if not endpoint:
+    if is_r2_endpoint(endpoint):
         return "auto"
     match = re.match(r"https?://s3[.-]([a-z0-9-]+)\.amazonaws\.com", endpoint)
     return match.group(1) if match and match.group(1) != "external-1" else "us-east-1"
@@ -149,7 +154,7 @@ class R2Library:
             raise RuntimeError("Bucket storage needs boto3: pip install -r requirements.txt") from exc
         self.bucket = bucket
         self.prefix = normalize_prefix(prefix)
-        self.is_r2 = not endpoint
+        self.is_r2 = is_r2_endpoint(endpoint)
         self.budget = budget
         self.tracks_dir = cache_dir / BUCKET_TRACKS_DIR
         self.tracks_dir.mkdir(parents=True, exist_ok=True)

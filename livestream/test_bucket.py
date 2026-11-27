@@ -98,6 +98,14 @@ class HelpersTest(unittest.TestCase):
         self.assertEqual(r2.s3_region("https://s3.amazonaws.com", None), "us-east-1")
         self.assertEqual(r2.s3_region("https://minio.example.com", None), "us-east-1")
         self.assertEqual(r2.s3_region("https://minio.example.com", "eu-1"), "eu-1")
+        self.assertEqual(r2.s3_region("https://abc123.eu.r2.cloudflarestorage.com", None), "auto")
+
+    def test_r2_endpoint(self):
+        self.assertTrue(r2.is_r2_endpoint(None))
+        self.assertTrue(r2.is_r2_endpoint("https://abc123.eu.r2.cloudflarestorage.com"))
+        self.assertTrue(r2.is_r2_endpoint("https://abc123.r2.cloudflarestorage.com/"))
+        self.assertFalse(r2.is_r2_endpoint("https://s3.eu-west-3.amazonaws.com"))
+        self.assertFalse(r2.is_r2_endpoint("https://r2.cloudflarestorage.com.evil.example"))
 
     def test_prefix(self):
         self.assertEqual(r2.normalize_prefix(None), "")

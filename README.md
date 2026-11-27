@@ -46,6 +46,8 @@ previous, current and next tracks on disk. Install the dependency first: `pip in
    For another S3 service, set `r2_endpoint` instead of the account ID, e.g. `https://s3.eu-west-3.amazonaws.com`
    (AWS; the region is read from it, or set `r2_region`), `https://s3.eu-central-003.backblazeb2.com` (Backblaze B2)
    or your MinIO server.
+   An R2 bucket in the EU jurisdiction also needs `r2_endpoint`: `https://<account ID>.eu.r2.cloudflarestorage.com`
+   (it is still treated as R2: region `auto`, free-tier guard on).
 3. Upload the tracks of your music folder (subfolders are kept). It only uploads missing files and never overwrites
    or deletes anything:
 
