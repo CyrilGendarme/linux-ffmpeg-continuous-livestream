@@ -1,4 +1,4 @@
-"""Tracks stored in a Cloudflare R2 bucket, downloaded one track ahead.
+"""Tracks stored in a Cloudflare R2 bucket (or any S3 service), downloaded one track ahead.
 
 - Initial listing: the bucket is listed once at startup (and saved, so a
   restart without network still knows the library). The listing is refreshed
@@ -16,6 +16,10 @@ the cache, and R2 is no longer called once a safety cap is reached:
   no HEAD, no automatic retries), none when the file is already cached.
 The radio never writes to the bucket, so it adds nothing to stored size; it
 only warns when the bucket gets close to 10 GB.
+
+Other S3 services (AWS S3, Backblaze B2, MinIO...) work through `r2_endpoint`.
+The same operation caps then still limit what a runaway process could cost,
+but the 10 GB storage limit is R2's only and is not applied.
 """
 
 import hashlib
@@ -31,7 +35,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, Iterator, List, Optional
 
-from .constants import SUPPORTED_AUDIO_EXTENSIONS
+from .constants import BUCKET_TRACKS_DIR, SUPPORTED_AUDIO_EXTENSIONS
+from .health import warning
 
 # Free tier, per calendar month (UTC). Caps leave a 10% margin for anything
 # else using the same account (uploads from your laptop are class A too).
@@ -99,7 +104,7 @@ class OperationBudget:
             fcntl.flock(lock_file, fcntl.LOCK_EX)
             self._state = self._load()
             if self._state[kind] >= self.caps[kind]:
-                raise BudgetExceeded(f"R2 {kind.replace('_', ' ')} cap reached for {self._state['month']} "
+                raise BudgetExceeded(f"Bucket {kind.replace('_', ' ')} cap reached for {self._state['month']} "
                                      f"({self.caps[kind]} operations)")
             self._state[kind] += 1
             self._save()
@@ -118,28 +123,43 @@ class RemoteTrack:
     modified: float  # unix time
 
 
-class R2Library:
-    """Lists and downloads audio files of one bucket (optionally under a prefix)."""
+def s3_region(endpoint: Optional[str], region: Optional[str]) -> str:
+    """The signing region: as configured, else read from an AWS endpoint, else auto (R2) or us-east-1."""
+    if region:
+        return region
+    if not endpoint:
+        return "auto"
+    match = re.match(r"https?://s3[.-]([a-z0-9-]+)\.amazonaws\.com", endpoint)
+    return match.group(1) if match and match.group(1) != "external-1" else "us-east-1"
 
-    def __init__(self, account_id: str, bucket: str, prefix: str, access_key_id: str, secret_access_key: str,
-                 cache_dir: Path, budget: OperationBudget) -> None:
+
+class R2Library:
+    """Lists and downloads audio files of one bucket (optionally under a prefix).
+
+    Cloudflare R2 by default (endpoint from the account ID), or any S3 service given its `endpoint`.
+    """
+
+    def __init__(self, account_id: Optional[str], bucket: str, prefix: str, access_key_id: str,
+                 secret_access_key: str, cache_dir: Path, budget: OperationBudget,
+                 endpoint: Optional[str] = None, region: Optional[str] = None) -> None:
         try:
             import boto3
             from botocore.config import Config
         except ImportError as exc:
-            raise RuntimeError("R2 storage needs boto3: pip install -r requirements.txt") from exc
+            raise RuntimeError("Bucket storage needs boto3: pip install -r requirements.txt") from exc
         self.bucket = bucket
-        self.prefix = prefix.lstrip("/")
+        self.prefix = normalize_prefix(prefix)
+        self.is_r2 = not endpoint
         self.budget = budget
-        self.tracks_dir = cache_dir / "r2-tracks"
+        self.tracks_dir = cache_dir / BUCKET_TRACKS_DIR
         self.tracks_dir.mkdir(parents=True, exist_ok=True)
         self.listing_file = cache_dir / "r2-listing.json"
         self.client = boto3.client(
             "s3",
-            endpoint_url=f"https://{account_id}.r2.cloudflarestorage.com",
+            endpoint_url=endpoint or f"https://{account_id}.r2.cloudflarestorage.com",
             aws_access_key_id=access_key_id,
             aws_secret_access_key=secret_access_key,
-            region_name="auto",
+            region_name=s3_region(endpoint, region),
             # One counted request per call: botocore must not retry behind our back.
             config=Config(retries={"total_max_attempts": 1}, connect_timeout=10, read_timeout=30),
         )
@@ -253,27 +273,29 @@ class R2Preloader:
         """List the bucket once before streaming (falls back to the last saved listing)."""
         try:
             self._listing = self.library.list_tracks()
-            self.log(f"R2: {len(self._listing)} track(s) in bucket {self.library.bucket} "
+            self.log(f"Bucket: {len(self._listing)} track(s) in bucket {self.library.bucket} "
                      f"({self.library.budget.summary()})")
         except Exception as exc:  # network, credentials, budget
             self._listing = self.library.saved_listing()
-            self.log(f"R2: listing failed ({exc}); using the saved listing of {len(self._listing)} track(s)")
+            self.log(f"Bucket: listing failed ({exc}); using the saved listing of {len(self._listing)} track(s)")
         if not self._listing:
-            raise FileNotFoundError(f"No audio tracks found in R2 bucket {self.library.bucket}/{self.library.prefix}")
+            raise FileNotFoundError(f"No audio tracks found in bucket {self.library.bucket}/{self.library.prefix}")
         self._check_storage(self._listing)
 
     def _check_storage(self, tracks: List[RemoteTrack]) -> None:
+        if not self.library.is_r2:
+            return  # the free storage limit is R2's
         total = getattr(self.library, "stored_bytes", 0) or sum(track.size for track in tracks)
         if total > STORAGE_WARNING_BYTES:
-            self.log(f"R2 WARNING: the bucket holds {total / 1000**3:.2f} GB, "
-                     f"close to the {FREE_STORAGE_BYTES / 1000**3:.0f} GB free storage")
+            self.log(warning("bucket-storage", f"the bucket holds {total / 1000**3:.2f} GB, "
+                             f"close to the {FREE_STORAGE_BYTES / 1000**3:.0f} GB R2 free storage"))
 
     def _refresh_in_background(self) -> None:
         def refresh() -> None:
             try:
                 tracks = self.library.list_tracks()
             except Exception as exc:
-                self.log(f"R2: listing refresh failed ({exc}); keeping the current listing")
+                self.log(f"Bucket: listing refresh failed ({exc}); keeping the current listing")
                 return
             if tracks:
                 self._check_storage(tracks)
@@ -292,7 +314,7 @@ class R2Preloader:
                 self._listing, self._refreshed = self._refreshed, None
             order = list(self._listing)
             random.shuffle(order)
-            self.log(f"R2: shuffled {len(order)} track(s)")
+            self.log(f"Bucket: shuffled {len(order)} track(s)")
             self._refresh_in_background()  # ready for the next pass, off the audio path
             for track in order:
                 yield self._schedule(track)
@@ -303,7 +325,7 @@ class R2Preloader:
             fallback = self._cached_fallback()
             if not self._offline_logged:
                 self._offline_logged = True
-                self.log("R2: monthly class B cap reached; replaying tracks already on disk")
+                self.log("Bucket: monthly class B cap reached; replaying tracks already on disk")
             if fallback is not None:
                 track = fallback
             else:
@@ -340,11 +362,12 @@ class R2Preloader:
                 self.library.download(track)
                 ok = True
                 if not cached:
-                    self.log(f"R2: preloaded {Path(track.key).name} "
+                    self.log(f"Bucket: preloaded {Path(track.key).name} "
                              f"({track.size / 1e6:.1f} MB in {time.monotonic() - started:.1f}s)")
             except Exception as exc:
                 ok = False
-                self.log(f"R2: download of {track.key} failed: {exc}")
+                self.log(warning("bucket-download", f"download of {track.key} failed after "
+                                 f"{time.monotonic() - started:.1f}s: {exc}"))
             with self._lock:
                 self._ok[path] = ok
                 callbacks = self._callbacks.pop(path, []) if ok else []
@@ -355,7 +378,7 @@ class R2Preloader:
                 try:
                     callback()
                 except Exception as exc:
-                    self.log(f"R2: preload callback failed: {exc}")
+                    self.log(f"Bucket: preload callback failed: {exc}")
 
     def when_ready(self, path: Path, callback: Callable[[], None]) -> None:
         """Run `callback` once `path` is fully on disk (right away if it already is)."""
@@ -375,7 +398,7 @@ class R2Preloader:
         if event is None:
             return path.exists()
         if not event.is_set():
-            self.log(f"R2: waiting for {path.name} to finish downloading...")
+            self.log(f"Bucket: waiting for {path.name} to finish downloading...")
             event.wait()
         with self._lock:
             return bool(self._ok.get(path))
@@ -400,11 +423,18 @@ class R2Preloader:
         self._downloads.put(None)
 
 
+def normalize_prefix(prefix: Optional[str]) -> str:
+    """"music" and "/music/" both mean the folder music/ (so music2/ is not included)."""
+    prefix = (prefix or "").strip("/")
+    return prefix + "/" if prefix else ""
+
+
 def library_from_args(argv) -> R2Library:
-    missing = [name for name in ("r2_bucket", "r2_account_id", "r2_access_key_id", "r2_secret_access_key")
-               if not getattr(argv, name)]
+    endpoint = getattr(argv, "r2_endpoint", None)
+    required = ("r2_bucket", "r2_access_key_id", "r2_secret_access_key") + (() if endpoint else ("r2_account_id",))
+    missing = [name for name in required if not getattr(argv, name)]
     if missing:
-        raise ValueError(f"R2 settings missing: {', '.join(missing)}")
+        raise ValueError(f"Bucket settings missing: {', '.join(missing)}")
     cache_dir = Path(argv.cache_dir).expanduser()
     budget = OperationBudget(
         cache_dir / "r2-operations.json",
@@ -412,7 +442,7 @@ def library_from_args(argv) -> R2Library:
         int(FREE_CLASS_B * CAP_RATIO),
     )
     return R2Library(argv.r2_account_id, argv.r2_bucket, argv.r2_prefix or "", argv.r2_access_key_id,
-                     argv.r2_secret_access_key, cache_dir, budget)
+                     argv.r2_secret_access_key, cache_dir, budget, endpoint, getattr(argv, "r2_region", None))
 
 
 def preloader_from_args(argv, log: Callable[[str], None]) -> R2Preloader:

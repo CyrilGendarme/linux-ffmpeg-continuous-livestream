@@ -107,20 +107,30 @@ OPTIONS: List[Option] = [
     Option("network_timeout", float, 10.0, "Stability", "Network timeout (s)", "RTMP read/write timeout.", minimum=1, maximum=300),
     Option("cache_dir", str, str(DEFAULT_CACHE_DIR), "Stability", "Cache folder", "Loudness cache and pre-rendered assets.",
            profile_override=False),
-    # -- Cloudflare R2 (tracks stored in a bucket instead of music_dir) ---------
-    Option("r2_bucket", str, None, "R2 storage", "R2 bucket",
-           "When set, tracks come from this Cloudflare R2 bucket instead of the music folder. The bucket is "
-           "listed at startup and each next track is fully downloaded while the current one plays.",
+    # -- Bucket storage: Cloudflare R2, or any S3 service (tracks stored in a bucket instead of music_dir)
+    Option("r2_bucket", str, None, "Bucket storage", "Bucket",
+           "When set, tracks come from this bucket (Cloudflare R2, or any S3 service with an endpoint below) "
+           "instead of the music folder. The bucket is listed at startup and each next track is fully "
+           "downloaded while the current one plays.",
            nullable=True, profile_override=False),
-    Option("r2_prefix", str, None, "R2 storage", "R2 folder (prefix)", "Only use objects under this prefix, e.g. music/.",
+    Option("r2_prefix", str, None, "Bucket storage", "Folder (prefix)", "Only use objects under this folder, e.g. music/.",
            nullable=True, profile_override=False),
-    Option("r2_account_id", str, None, "R2 storage", "Cloudflare account ID",
-           "From the R2 page of the Cloudflare dashboard (endpoint https://<account id>.r2.cloudflarestorage.com).",
+    Option("r2_account_id", str, None, "Bucket storage", "Cloudflare account ID",
+           "For R2: from the R2 page of the Cloudflare dashboard (endpoint "
+           "https://<account id>.r2.cloudflarestorage.com). Not needed with an S3 endpoint.",
            nullable=True, profile_override=False),
-    Option("r2_access_key_id", str, None, "R2 storage", "R2 access key ID",
-           "From an R2 API token; read-only access to the bucket is enough.", nullable=True, profile_override=False),
-    Option("r2_secret_access_key", str, None, "R2 storage", "R2 secret access key",
-           "Secret of the same R2 API token.", nullable=True, secret=True, profile_override=False),
+    Option("r2_endpoint", str, None, "Bucket storage", "S3 endpoint URL",
+           "Empty = Cloudflare R2. Otherwise the S3 service's endpoint, e.g. https://s3.eu-west-3.amazonaws.com "
+           "(AWS), https://s3.eu-central-003.backblazeb2.com (Backblaze B2) or your MinIO server.",
+           nullable=True, profile_override=False),
+    Option("r2_region", str, None, "Bucket storage", "S3 region",
+           "Region of the bucket, e.g. eu-west-3. Empty = taken from an AWS endpoint, otherwise auto (R2) "
+           "or us-east-1.", nullable=True, profile_override=False),
+    Option("r2_access_key_id", str, None, "Bucket storage", "Access key ID",
+           "From an API token / access key; read-only access to the bucket is enough for the radio.",
+           nullable=True, profile_override=False),
+    Option("r2_secret_access_key", str, None, "Bucket storage", "Secret access key",
+           "Secret of the same token / key.", nullable=True, secret=True, profile_override=False),
     # -- Restream (stream title; used by the web app only) --------------------
     Option("restream_client_id", str, None, "Restream", "Restream app client ID",
            "From your app at developers.restream.io/apps, to change the stream title from the show page.",
@@ -263,7 +273,9 @@ def validate_config(data: Any, check_paths: bool = True, base_dir: Optional[Path
             clean[option.name] = value
 
     if "music_dir" not in errors and not clean.get("music_dir") and not clean.get("r2_bucket"):
-        errors["music_dir"] = "is required (unless an R2 bucket is set)"
+        errors["music_dir"] = "is required (unless a bucket is set)"
+    if clean.get("r2_bucket") and not clean.get("r2_endpoint") and not clean.get("r2_account_id"):
+        errors["r2_account_id"] = "is required for Cloudflare R2 (or set an S3 endpoint)"
 
     if not errors.get("background_videos") and not errors.get("background_video") and not (
         clean.get("background_videos") or clean.get("background_video")

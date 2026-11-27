@@ -5,15 +5,18 @@ running. The mixer keeps just the last `fade` seconds of the current track in
 memory so it can crossfade it with the head of the next track.
 
 The feeder outlives the encoder: if the encoder is restarted (network drop,
-stall), feeding resumes from the exact position in the current track.
+stall), feeding resumes from the exact position in the current track. The
+last REPLAY_SECONDS of audio sent are kept, so the audio a dead encoder still
+held (queued, never streamed) can be sent again with rewind(): nothing is skipped.
 """
 
 import subprocess
 import threading
 import time
 from array import array
+from collections import deque
 from pathlib import Path
-from typing import BinaryIO, Callable, Iterator, Optional, Union
+from typing import BinaryIO, Callable, Deque, Iterator, Optional, Tuple, Union
 
 from .ffmpeg import PCM_CHANNELS, PCM_SAMPLE_RATE, build_decoder_command
 from .health import clock, warning
@@ -28,6 +31,9 @@ EARLY_END_RATIO = 0.97
 # The encoder holds a few seconds of audio (ffmpeg.AUDIO_QUEUE_SIZE); opening the
 # next track slower than this eats into it, and past it the stream freezes.
 SLOW_OPEN_SECONDS = 2.0
+# Audio kept after it is sent, to replay what a dead encoder still held
+# (ffmpeg.AUDIO_QUEUE_SIZE is ~5 s, plus what sits in the filters). ~6 MB.
+REPLAY_SECONDS = 15.0
 
 
 class TrackDecoder:
@@ -87,6 +93,10 @@ class TrackDecoder:
         self.process.wait()
 
 
+def _frames(chunk: bytes) -> int:
+    return len(chunk) // (PCM_CHANNELS * SAMPLE_BYTES)
+
+
 def _apply_gain_ramp(samples: array, start: float, end: float) -> None:
     frames = len(samples) // PCM_CHANNELS
     if frames == 0:
@@ -130,7 +140,10 @@ class AudioFeeder:
         self._gain_for = gain_for
         self._on_upcoming = on_upcoming
         self._chunks = self._generate()
-        self._pending: Optional[bytes] = None
+        self._pending: Optional[Tuple[bytes, Optional[Path]]] = None  # (chunk, track it belongs to), not sent yet
+        self._sent: Deque[Tuple[bytes, Optional[Path]]] = deque()  # the last REPLAY_SECONDS sent
+        self._sent_frames = 0
+        self._replay: Deque[Tuple[bytes, Optional[Path]]] = deque()  # rewound, sent again before new audio
         self.current_track: Optional[Path] = None
         self.previous_track: Optional[Path] = None
         self.frames_written = 0  # every audio frame written to an encoder, for incident reports
@@ -217,28 +230,57 @@ class AudioFeeder:
         """Write audio to `sink` until `stop` is set or the sink breaks.
 
         Returns True when all tracks have been played. A chunk that could not be
-        written is kept and re-sent first on the next call.
+        written is kept and re-sent first on the next call, after any rewound audio.
         """
         if self.current_track is not None:
             on_track_start(self.current_track)  # resumed: show the track again
         while not stop.is_set():
             if self._pending is None:
-                item = next(self._chunks, None)
-                if item is None:
-                    sink.flush()
-                    return True
-                if isinstance(item, Path):
-                    self.previous_track, self.current_track = self.current_track, item
-                    self.track_frames_written = 0
-                    on_track_start(item)
-                    continue
-                self._pending = item
-            sink.write(self._pending)
-            frames = len(self._pending) // (PCM_CHANNELS * SAMPLE_BYTES)
-            self.frames_written += frames
-            self.track_frames_written += frames
+                if self._replay:
+                    self._pending = self._replay.popleft()
+                else:
+                    item = next(self._chunks, None)
+                    if item is None:
+                        sink.flush()
+                        return True
+                    if isinstance(item, Path):
+                        self.previous_track, self.current_track = self.current_track, item
+                        self.track_frames_written = 0
+                        on_track_start(item)
+                        continue
+                    self._pending = (item, self.current_track)
+            chunk, track = self._pending
+            sink.write(chunk)
             self._pending = None
+            frames = _frames(chunk)
+            self.frames_written += frames
+            if track == self.current_track:
+                self.track_frames_written += frames
+            self._sent.append((chunk, track))
+            self._sent_frames += frames
+            while self._sent and self._sent_frames - _frames(self._sent[0][0]) >= REPLAY_SECONDS * PCM_SAMPLE_RATE:
+                self._sent_frames -= _frames(self._sent.popleft()[0])
         return False
+
+    def rewind(self, seconds: float) -> float:
+        """Send (up to REPLAY_SECONDS of) the last `seconds` of audio again on the next feed().
+
+        Whole chunks (~0.1 s) are rewound, so slightly more than asked may be
+        repeated. Call it only while feed() is not running. Returns the seconds rewound.
+        """
+        if self._pending is not None:  # not sent yet: it follows the rewound audio
+            self._replay.appendleft(self._pending)
+            self._pending = None
+        wanted, rewound = seconds * PCM_SAMPLE_RATE, 0
+        while self._sent and rewound < wanted:
+            chunk, track = self._sent.pop()
+            frames = _frames(chunk)
+            self._sent_frames -= frames
+            rewound += frames
+            if track == self.current_track:
+                self.track_frames_written -= frames
+            self._replay.appendleft((chunk, track))
+        return rewound / PCM_SAMPLE_RATE
 
     def close(self) -> None:
         self._chunks.close()

@@ -1,6 +1,6 @@
-"""Upload the local tracks that are not in the R2 bucket yet.
+"""Upload the local tracks that are not in the bucket yet (Cloudflare R2 or S3).
 
-Reads the R2 settings and music_dir from the config file (CLI flags override).
+Reads the bucket settings and music_dir from the config file (CLI flags override).
 A track is "already pushed" when an object with the same key exists; the key is
 r2_prefix + the path relative to music_dir. Existing objects are never
 overwritten, and nothing is ever deleted from the bucket.
@@ -21,13 +21,13 @@ from .config import OPTIONS_BY_NAME, load_config_file, option_value
 from .media import find_audio_files
 from .r2 import CAP_RATIO, FREE_STORAGE_BYTES, BudgetExceeded, library_from_args
 
-SETTINGS = ("music_dir", "cache_dir", "r2_bucket", "r2_prefix", "r2_account_id", "r2_access_key_id",
-            "r2_secret_access_key")
+SETTINGS = ("music_dir", "cache_dir", "r2_bucket", "r2_prefix", "r2_account_id", "r2_endpoint", "r2_region",
+            "r2_access_key_id", "r2_secret_access_key")
 
 
 def parse_args(argv=None) -> SimpleNamespace:
-    parser = argparse.ArgumentParser(description="Upload local tracks that are not in the R2 bucket yet.")
-    parser.add_argument("--config", default="config.json", help="Config file with the R2 settings (default: config.json)")
+    parser = argparse.ArgumentParser(description="Upload local tracks that are not in the bucket yet (Cloudflare R2 or S3).")
+    parser.add_argument("--config", default="config.json", help="Config file with the bucket settings (default: config.json)")
     parser.add_argument("--music-dir", help="Local folder to push (default: music_dir from the config)")
     parser.add_argument("--dry-run", action="store_true", help="Only show what would be uploaded")
     args = parser.parse_args(argv)
@@ -62,9 +62,7 @@ def main(argv=None) -> int:
 
     music_dir = Path(settings.music_dir).expanduser()
     local = find_audio_files(music_dir)
-    prefix = library.prefix
-    if prefix and not prefix.endswith("/"):
-        prefix += "/"
+    prefix = library.prefix  # empty or ending in "/"
 
     try:
         remote = {track.key for track in library.list_tracks()}
@@ -75,9 +73,10 @@ def main(argv=None) -> int:
     pending = [(path, prefix + path.relative_to(music_dir).as_posix()) for path in local]
     pending = [(path, key) for path, key in pending if key not in remote]
     total = sum(path.stat().st_size for path, _key in pending)
-    limit = int(FREE_STORAGE_BYTES * CAP_RATIO)
+    limit = int(FREE_STORAGE_BYTES * CAP_RATIO) if library.is_r2 else float("inf")  # R2's free storage
 
-    print(f"Bucket {library.bucket}: {len(remote)} track(s), {human(stored)} stored (limit used here: {human(limit)})")
+    print(f"Bucket {library.bucket}: {len(remote)} track(s), {human(stored)} stored"
+          + (f" (limit used here: {human(limit)})" if library.is_r2 else ""))
     print(f"Local {music_dir}: {len(local)} track(s), {len(pending)} not pushed yet ({human(total)})")
     print(f"Operations this month: {library.budget.summary()}")
     if not pending:

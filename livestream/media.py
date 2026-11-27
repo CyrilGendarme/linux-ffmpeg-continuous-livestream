@@ -1,9 +1,12 @@
 import json
+import re
 import subprocess
 from pathlib import Path
 from typing import Dict, Iterable, List
 
-from .constants import SUPPORTED_AUDIO_EXTENSIONS
+from .constants import BUCKET_TRACKS_DIR, SUPPORTED_AUDIO_EXTENSIONS
+
+_BUCKET_PREFIX = re.compile(r"^[0-9a-f]{12}-")
 
 
 def find_audio_files(music_dir: Path) -> List[Path]:
@@ -33,6 +36,13 @@ def write_playlist(tracks: Iterable[Path], playlist_path: Path) -> None:
             handle.write(f"file '{escape_concat_path(track)}'\n")
 
 
+def display_stem(track: Path) -> str:
+    """The file name without extension, as a fallback title (without the download prefix of bucket tracks)."""
+    if track.parent.name == BUCKET_TRACKS_DIR:
+        return _BUCKET_PREFIX.sub("", track.stem)
+    return track.stem
+
+
 def ffprobe_json(path: Path) -> dict:
     cmd = ["ffprobe", "-v", "error", "-show_format", "-show_streams", "-print_format", "json", str(path)]
     proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
@@ -49,7 +59,7 @@ def format_track_name(track: Path, info: dict) -> str:
         return title
     if artist:
         return artist
-    return track.stem
+    return display_stem(track)
 
 
 def probe_duration_seconds(info: dict, path: Path) -> float:
@@ -81,7 +91,7 @@ def extract_track_fields(track: Path, info: dict) -> Dict[str, str]:
     return {
         "center": display_title,
         "artist": artist,
-        "title": title or track.stem,
+        "title": title or display_stem(track),
         "album": album,
         "label": label,
         "year": year,

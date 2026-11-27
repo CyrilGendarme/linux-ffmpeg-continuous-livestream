@@ -18,7 +18,7 @@ from .config import LIVE_OPTIONS, OPTIONS_BY_NAME, background_sources, load_conf
 from .ffmpeg import PCM_SAMPLE_RATE, build_background_command, build_background_decoder_command, build_ffmpeg_command
 from .health import clock, warning
 from .loudness import LoudnessNormalizer
-from .media import extract_cover, extract_track_fields, ffprobe_json, find_audio_files, probe_duration_seconds
+from .media import display_stem, extract_cover, extract_track_fields, ffprobe_json, find_audio_files, probe_duration_seconds
 from .overlay import OverlayRenderer
 from .prerender import Prerenderer
 from .r2 import preloader_from_args
@@ -112,7 +112,7 @@ class OverlayFeed:
             fields = extract_track_fields(track, info)
             duration = probe_duration_seconds(info, track)
         except (subprocess.CalledProcessError, ValueError):
-            fields, duration = {"center": track.stem, "title": track.stem}, 0.0
+            fields, duration = {"center": display_stem(track), "title": display_stem(track)}, 0.0
         return fields, extract_cover(track), duration
 
     def upcoming(self, track: Path) -> None:
@@ -603,24 +603,30 @@ def run_cycle(feeder: AudioFeeder, overlay: OverlayFeed, live: LiveConfig, argv)
         for thread in threads:
             thread.join(timeout=5)
         if failure is not None:
+            # Audio sent to the dead encoder but never streamed out: send it again to the next one.
             sent = (feeder.frames_written - written_at_start) / PCM_SAMPLE_RATE
-            announce(warning("radio-restart", f"{failure}. {describe_audio_loss(feeder, sent - watchdog.out_seconds)}"))
+            queued = max(0.0, sent - watchdog.out_seconds)
+            replayed = 0.0 if audio_thread.is_alive() else feeder.rewind(queued + REPLAY_MARGIN_SECONDS)
+            announce(warning("radio-restart", f"{failure}. {describe_audio_loss(feeder, queued, replayed)}"))
             failure.reported = True
 
 
-def describe_audio_loss(feeder: AudioFeeder, lost: float) -> str:
-    """What listeners miss when an encoder dies with `lost` seconds of audio still queued inside it.
+# Extra audio replayed after a restart: what the encoder had encoded but not yet
+# sent is not in its output time. A fraction of a second heard twice beats a skip.
+REPLAY_MARGIN_SECONDS = 0.2
 
-    The feeder resumes right after the last chunk it wrote, so that queued audio is skipped.
-    """
+
+def describe_audio_loss(feeder: AudioFeeder, queued: float, replayed: float) -> str:
+    """What listeners get after an encoder died with `queued` seconds of audio inside it, `replayed` of which is sent again."""
     track = feeder.current_track
-    if track is None or lost < 0.2:
-        return "No audio lost."
-    position = feeder.track_frames_written / PCM_SAMPLE_RATE  # where the track resumes
-    if lost <= position:
-        return f"~{lost:.1f}s of audio lost: {track.name} jumps from {clock(position - lost)} to {clock(position)}."
-    previous = f"the last {lost - position:.1f}s of {feeder.previous_track.name} and " if feeder.previous_track else ""
-    return f"~{lost:.1f}s of audio lost: {previous}the first {clock(position)} of {track.name} (track cut)."
+    if track is None or queued < 0.2:
+        return "No audio was waiting in the encoder."
+    resume = clock(feeder.track_frames_written / PCM_SAMPLE_RATE)
+    lost = queued - replayed
+    if lost < 0.2:
+        return f"{queued:.1f}s of audio still in the encoder is played again: nothing skipped, {track.name} resumes at {resume}."
+    return (f"~{lost:.1f}s of audio lost ({replayed:.1f}s of the {queued:.1f}s in the encoder could be replayed): "
+            f"{track.name} resumes at {resume}.")
 
 
 def handle_shutdown(signum, frame) -> None:

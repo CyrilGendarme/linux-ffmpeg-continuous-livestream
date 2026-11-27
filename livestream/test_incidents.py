@@ -112,19 +112,57 @@ class RetimeTest(unittest.TestCase):
 
 class AudioLossTest(unittest.TestCase):
     def feeder(self, position: float) -> SimpleNamespace:
-        return SimpleNamespace(current_track=Path("b.mp3"), previous_track=Path("a.mp3"),
-                               track_frames_written=int(position * 48000))
+        return SimpleNamespace(current_track=Path("b.mp3"), track_frames_written=int(position * 48000))
 
-    def test_loss_within_the_track(self):
-        self.assertEqual(describe_audio_loss(self.feeder(65), 5.0),
-                         "~5.0s of audio lost: b.mp3 jumps from 1:00 to 1:05.")
+    def test_queued_audio_is_replayed(self):
+        self.assertEqual(describe_audio_loss(self.feeder(60), 5.0, 5.2),
+                         "5.0s of audio still in the encoder is played again: nothing skipped, b.mp3 resumes at 1:00.")
 
-    def test_loss_reaching_into_the_previous_track(self):
-        self.assertEqual(describe_audio_loss(self.feeder(2), 5.0),
-                         "~5.0s of audio lost: the last 3.0s of a.mp3 and the first 0:02 of b.mp3 (track cut).")
+    def test_more_queued_than_can_be_replayed(self):
+        self.assertEqual(describe_audio_loss(self.feeder(60), 20.0, 15.0),
+                         "~5.0s of audio lost (15.0s of the 20.0s in the encoder could be replayed): b.mp3 resumes at 1:00.")
 
-    def test_nothing_lost(self):
-        self.assertEqual(describe_audio_loss(self.feeder(30), 0.1), "No audio lost.")
+    def test_nothing_queued(self):
+        self.assertEqual(describe_audio_loss(self.feeder(30), 0.1, 0.0), "No audio was waiting in the encoder.")
+
+
+class ReplayTest(unittest.TestCase):
+    """rewind() sends the last audio again, in order, before new audio."""
+
+    def chunks(self, count: int):
+        return [bytes([index]) * 8 * 4800 for index in range(count)]  # 0.1 s each, tagged by their byte value
+
+    def feeder(self, chunks) -> AudioFeeder:
+        feeder = AudioFeeder(iter([]), 0.0, lambda _message: None)
+        feeder._chunks = iter([Path("a.mp3"), *chunks])
+        return feeder
+
+    def test_rewound_audio_comes_first_then_the_rest(self):
+        chunks = self.chunks(10)
+        feeder = self.feeder(chunks)
+
+        class Breaks(io.BytesIO):
+            def write(self, data):
+                if self.tell() >= 6 * len(data):
+                    raise BrokenPipeError
+                return super().write(data)
+
+        with self.assertRaises(BrokenPipeError):
+            feeder.feed(Breaks(), lambda _track: None, threading.Event())
+        self.assertAlmostEqual(feeder.track_frames_written / 48000, 0.6)
+        self.assertAlmostEqual(feeder.rewind(0.25), 0.3)  # whole chunks
+        self.assertAlmostEqual(feeder.track_frames_written / 48000, 0.3)
+
+        sink = io.BytesIO()
+        self.assertTrue(feeder.feed(sink, lambda _track: None, threading.Event()))
+        played = [sink.getvalue()[offset] for offset in range(0, len(sink.getvalue()), 8 * 4800)]
+        self.assertEqual(played, [3, 4, 5, 6, 7, 8, 9])  # 6 was pending when the sink broke
+        self.assertAlmostEqual(feeder.track_frames_written / 48000, 1.0)
+
+    def test_only_the_last_replay_seconds_are_kept(self):
+        feeder = self.feeder(self.chunks(200))  # 20 s
+        feeder.feed(io.BytesIO(), lambda _track: None, threading.Event())
+        self.assertAlmostEqual(feeder.rewind(60), 15.0)
 
 
 class HealthTest(unittest.TestCase):
